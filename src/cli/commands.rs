@@ -12,6 +12,7 @@ use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
+use std::collections::HashMap; // Add this import
 use std::env;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -41,6 +42,18 @@ pub const COUNTRIES: [&str; 6] = [
     "PK", // Pakistan
 ];
 
+// Add a function to get the country name map
+fn get_country_name_map() -> HashMap<&'static str, &'static str> {
+    let mut map = HashMap::new();
+    map.insert("NL", "Netherlands");
+    map.insert("DE", "Germany");
+    map.insert("FR", "France");
+    map.insert("GR", "Greece");
+    map.insert("ES", "Spain");
+    map.insert("PK", "Pakistan");
+    map
+}
+
 /// Defines the available commands that the user can trigger through the interactive menu.
 #[derive(Debug, Clone)]
 pub enum Commands {
@@ -48,7 +61,7 @@ pub enum Commands {
     InitDb,
     /// Import data from the OpenAQ API for a specified number of past days.
     Import { days: i64 },
-    /// Find the most polluted country based on recent PM2.5 and PM10 data.
+    /// Find the most polluted country based on recent PM2.5 and PM10 data (last 7 days).
     MostPolluted,
     /// Calculate the average air quality metrics for a specific country over a number of days.
     Average(AverageArgs),
@@ -254,9 +267,12 @@ impl App {
     }
 
     /// Queries the database for the most polluted country based on a weighted index
-    /// of recent PM2.5 and PM10 values and displays the result in a table.
+    /// of recent PM2.5 and PM10 values (last 7 days) and displays the result in a table.
     async fn find_most_polluted(&self) -> Result<()> {
-        println!("{}", "Finding the most polluted country...".yellow());
+        println!(
+            "{}",
+            "Finding the most polluted country (last 7 days)...".yellow()
+        ); // Updated description
         let pb = ProgressBar::new_spinner();
         pb.enable_steady_tick(StdDuration::from_millis(120));
         pb.set_style(
@@ -265,8 +281,14 @@ impl App {
         );
         pb.set_message("Querying database...");
         let country_refs: Vec<&str> = COUNTRIES.to_vec();
+        // NOTE: The actual time interval logic is in db.get_most_polluted_country
         let result = self.db.get_most_polluted_country(&country_refs).await?;
         pb.finish_and_clear();
+
+        let country_map = get_country_name_map();
+        let full_country_name = country_map
+            .get(result.country.as_str())
+            .unwrap_or(&result.country.as_str()); // Get full name
 
         let mut table = Table::new();
         table
@@ -278,7 +300,7 @@ impl App {
             ]);
         table.add_row(vec![
             Cell::new("Most Polluted Country"),
-            Cell::new(&result.country)
+            Cell::new(format!("{} ({})", full_country_name, result.country)) // Show full name + code
                 .fg(Color::Cyan)
                 .add_attribute(Attribute::Bold),
         ]);
@@ -312,6 +334,11 @@ impl App {
     /// for the given country and displays the results in a table.
     async fn calculate_average(&self, country: &str, days: i64) -> Result<()> {
         let country_code = country.to_uppercase();
+        let country_map = get_country_name_map();
+        let full_country_name = country_map
+            .get(country_code.as_str())
+            .unwrap_or(&country_code.as_str());
+
         // Validate country code against the predefined list
         if !COUNTRIES.contains(&country_code.as_str()) {
             return Err(AppError::Cli(format!(
@@ -320,10 +347,12 @@ impl App {
             )));
         }
         println!(
-            "{} {} {}-{}",
+            "{} {} {}-{} {} ({})", // Updated format string
             "Calculating".yellow(),
             format!("{}", days).yellow().bold(),
             "day average for".yellow(),
+            full_country_name.yellow().bold(), // Use full name
+            "country code:".yellow(),
             country_code.yellow().bold()
         );
         let pb = ProgressBar::new_spinner();
@@ -336,11 +365,16 @@ impl App {
         let result = self.db.get_average_air_quality(&country_code, days).await?;
         pb.finish_and_clear();
 
+        let result_full_name = country_map
+            .get(result.country.as_str())
+            .unwrap_or(&result.country.as_str()); // Get full name for result
+
         println!(
-            "{}-{} {} ({} {})",
+            "{}-{} {} {} ({}) ({} {})", // Updated format string
             format!("{}", days).bold(),
             "day average air quality for".green(),
-            result.country.bold().cyan(),
+            result_full_name.bold().cyan(), // Use full name
+            result.country.bold().cyan(),   // Show code too
             "Based on".dimmed(),
             format!("{} measurements", result.measurement_count).dimmed()
         );
@@ -382,6 +416,11 @@ impl App {
     /// country and displays the results in a table.
     async fn get_measurements_table(&self, country: &str) -> Result<()> {
         let country_code = country.to_uppercase();
+        let country_map = get_country_name_map();
+        let full_country_name = country_map
+            .get(country_code.as_str())
+            .unwrap_or(&country_code.as_str());
+
         // Validate country code
         if !COUNTRIES.contains(&country_code.as_str()) {
             return Err(AppError::Cli(format!(
@@ -390,8 +429,9 @@ impl App {
             )));
         }
         println!(
-            "{} {}",
+            "{} {} ({})", // Updated format string
             "Fetching latest measurements by city for".yellow(),
+            full_country_name.yellow().bold(), // Use full name
             country_code.yellow().bold()
         );
         let pb = ProgressBar::new_spinner();
@@ -410,7 +450,11 @@ impl App {
         if city_measurements.is_empty() {
             println!(
                 "{}",
-                format!("No measurements found for cities in {}", country_code).yellow()
+                format!(
+                    "No measurements found for cities in {} ({})",
+                    full_country_name, country_code
+                )
+                .yellow() // Use full name
             );
             return Ok(());
         }
@@ -453,26 +497,33 @@ impl App {
 
 /// Prompts the user to select a country from the predefined `COUNTRIES` list.
 pub fn prompt_country() -> Result<String> {
+    let country_map = get_country_name_map();
+    let country_display: Vec<String> = COUNTRIES
+        .iter()
+        .map(|code| format!("{} ({})", country_map.get(code).unwrap_or(code), code)) // Show "Name (Code)"
+        .collect();
+
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a country")
-        .items(&COUNTRIES)
+        .items(&country_display) // Use display names
         .default(0)
         .interact()?;
-    Ok(COUNTRIES[selection].to_string())
+    Ok(COUNTRIES[selection].to_string()) // Return the code
 }
 
 /// Prompts the user to enter the number of days for historical data retrieval.
 ///
-/// Validates that the input is a positive integer up to 365.
+/// Validates that the input is an integer between 7 and 365 (inclusive).
 pub fn prompt_days() -> Result<i64> {
     let days: i64 = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Enter number of days for history (e.g., 5)")
-        .default(5) // Default to 5 days
+        .with_prompt("Enter number of days for history (min 7, max 365)") // Updated prompt
+        .default(7) // Default to 7 days
         .validate_with(|input: &i64| -> std::result::Result<(), &str> {
-            if *input > 0 && *input <= 365 {
+            if *input >= 7 && *input <= 365 {
+                // Updated validation: >= 7
                 Ok(())
             } else {
-                Err("Please enter a positive number of days (up to 365).")
+                Err("Please enter a number of days between 7 and 365.") // Updated error message
             }
         })
         .interact_text()?;

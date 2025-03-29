@@ -179,13 +179,13 @@ impl Database {
                     parameter,
                     AVG(value::DOUBLE PRECISION) as avg_value
                 FROM measurements
-                WHERE 
+                WHERE
                     country IN ('{}')
                     AND parameter IN ('pm25', 'pm10')
-                    AND date_utc > NOW() - INTERVAL '2 days'
+                    AND date_utc > NOW() - INTERVAL '7 days'
                 GROUP BY country, parameter
             )
-            SELECT 
+            SELECT
                 country,
                 SUM(CASE WHEN parameter = 'pm25' THEN avg_value * 1.5 ELSE 0 END)::DOUBLE PRECISION +
                 SUM(CASE WHEN parameter = 'pm10' THEN avg_value ELSE 0 END)::DOUBLE PRECISION as pollution_index,
