@@ -43,9 +43,17 @@ docker-compose up
 ```
 
 This will:
-1. Start a PostgreSQL database
-2. Build and run the application
-3. Import the last 5 days of air quality data by default
+1. Start a PostgreSQL database using a named volume (`postgres_data`) for persistence.
+2. Build and run the application.
+3. Import the last 5 days of air quality data by default.
+
+To stop the services and remove the containers, networks, and the database volume (clearing all stored data), run:
+
+```bash
+docker-compose down -v
+```
+
+If you only want to stop the containers without removing the volume, use `docker-compose down`.
 
 ### Manual Setup
 
@@ -98,7 +106,7 @@ The available options will change based on the application's state (whether the 
     This query shows the earliest and latest timestamps and calculates the number of days spanned by the data.
 
 3.  **Find Most Polluted Country:** Analyzes recent data (last 7 days) for PM2.5 and PM10 across the predefined countries (Netherlands, Germany, France, Greece, Spain, Pakistan) and displays the country (full name and code) with the highest calculated pollution index.
-4.  **Calculate Average Air Quality:** Prompts for a country (selecting from a list showing full names and codes) and the number of days. Calculates and displays the average values for various pollutants (PM2.5, PM10, O3, NO2, SO2, CO) for that country over the specified period. Displays the full country name and code in the output.
+4.  **Calculate Average Air Quality:** Prompts for a country (selecting from a list showing full names and codes). Calculates and displays the 5-day average values for various pollutants (PM2.5, PM10, O3, NO2, SO2, CO) for that country. Displays the full country name and code in the output.
 5.  **Get Measurements by City:** Prompts for a country (selecting from a list showing full names and codes). Displays a table showing the latest measurement value for each pollutant, grouped by city, within that country. Displays the full country name and code in the output header.
 6.  **Exit:** Terminates the application.
 
@@ -181,8 +189,23 @@ This will display the table definition, including columns, types, indexes, and c
 
 ### Running Tests
 
+Run the unit tests (excluding database integration tests):
 ```bash
 cargo test
+```
+
+To run the database integration tests (located in `src/db/postgres.rs`), you need a running PostgreSQL instance accessible via the `DATABASE_URL` in your `.env` file. You can start the database using Docker Compose:
+```bash
+# Start only the database service in the background
+docker-compose up -d db
+```
+Then, run the ignored tests specifically:
+```bash
+cargo test -- --ignored
+```
+Remember to stop the database container when finished:
+```bash
+docker-compose down
 ```
 
 ### Formatting Code

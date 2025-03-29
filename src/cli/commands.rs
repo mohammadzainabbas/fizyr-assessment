@@ -63,7 +63,7 @@ pub enum Commands {
     Import { days: i64 },
     /// Find the most polluted country based on recent PM2.5 and PM10 data (last 7 days).
     MostPolluted,
-    /// Calculate the average air quality metrics for a specific country over a number of days.
+    /// Calculate the 5-day average air quality metrics for a specific country.
     Average(AverageArgs),
     /// Get the latest measurements for all parameters, grouped by city, for a specific country.
     Measurements(MeasurementsArgs),
@@ -74,8 +74,7 @@ pub enum Commands {
 pub struct AverageArgs {
     /// The 2-letter country code.
     pub country: String,
-    /// The number of past days to include in the average calculation.
-    pub days: i64,
+    // Removed days field
 }
 
 /// Arguments for the `Measurements` command.
@@ -183,7 +182,8 @@ impl App {
                 Ok(())
             },
             Commands::Average(args) => {
-                self.calculate_average(&args.country, args.days).await?;
+                // Call calculate_average without the days argument
+                self.calculate_average(&args.country).await?;
                 Ok(())
             },
             Commands::Measurements(args) => {
@@ -286,9 +286,11 @@ impl App {
         pb.finish_and_clear();
 
         let country_map = get_country_name_map();
+        // Fix E0716: Ensure the fallback reference lives long enough
         let full_country_name = country_map
             .get(result.country.as_str())
-            .unwrap_or(&result.country.as_str()); // Get full name
+            .copied() // Convert Option<&&'static str> to Option<&'static str>
+            .unwrap_or(&result.country); // Fallback to &String (coerces to &str with appropriate lifetime)
 
         let mut table = Table::new();
         table
@@ -330,14 +332,18 @@ impl App {
         Ok(())
     }
 
-    /// Calculates the average value for each pollutant over the specified number of days
+    /// Calculates the 5-day average value for each pollutant
     /// for the given country and displays the results in a table.
-    async fn calculate_average(&self, country: &str, days: i64) -> Result<()> {
+    // Remove the 'days' parameter from the function signature
+    async fn calculate_average(&self, country: &str) -> Result<()> {
+        // Removed unused 'days' variable
         let country_code = country.to_uppercase();
         let country_map = get_country_name_map();
+        // Fix E0716: Ensure the fallback reference lives long enough
         let full_country_name = country_map
             .get(country_code.as_str())
-            .unwrap_or(&country_code.as_str());
+            .copied()
+            .unwrap_or(&country_code);
 
         // Validate country code against the predefined list
         if !COUNTRIES.contains(&country_code.as_str()) {
@@ -347,10 +353,9 @@ impl App {
             )));
         }
         println!(
-            "{} {} {}-{} {} ({})", // Updated format string
+            "{} {}-{} {} ({})", // Updated format string for fixed 5 days
             "Calculating".yellow(),
-            format!("{}", days).yellow().bold(),
-            "day average for".yellow(),
+            "5-day average for".yellow(),      // Hardcode 5 days
             full_country_name.yellow().bold(), // Use full name
             "country code:".yellow(),
             country_code.yellow().bold()
@@ -362,16 +367,19 @@ impl App {
                 .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
         );
         pb.set_message("Querying database...");
-        let result = self.db.get_average_air_quality(&country_code, days).await?;
+        // Call DB function without days argument
+        let result = self.db.get_average_air_quality(&country_code).await?;
         pb.finish_and_clear();
 
+        // Fix E0716: Ensure the fallback reference lives long enough
         let result_full_name = country_map
             .get(result.country.as_str())
-            .unwrap_or(&result.country.as_str()); // Get full name for result
+            .copied()
+            .unwrap_or(&result.country); // Get full name for result
 
         println!(
-            "{}-{} {} {} ({}) ({} {})", // Updated format string
-            format!("{}", days).bold(),
+            "{}-{} {} {} ({}) ({})", // Corrected format string (6 placeholders)
+            "5".bold(),              // Hardcode 5 days
             "day average air quality for".green(),
             result_full_name.bold().cyan(), // Use full name
             result.country.bold().cyan(),   // Show code too
@@ -417,9 +425,11 @@ impl App {
     async fn get_measurements_table(&self, country: &str) -> Result<()> {
         let country_code = country.to_uppercase();
         let country_map = get_country_name_map();
+        // Fix E0716: Ensure the fallback reference lives long enough
         let full_country_name = country_map
             .get(country_code.as_str())
-            .unwrap_or(&country_code.as_str());
+            .copied()
+            .unwrap_or(&country_code);
 
         // Validate country code
         if !COUNTRIES.contains(&country_code.as_str()) {
@@ -602,10 +612,12 @@ mod tests {
                 panic!("MockDatabase::get_most_polluted_country called without expectation")
             })
         }
+        // Update mock signature to remove _days
+        // Update mock signature to remove _days
         async fn get_average_air_quality(
             &self,
             _country: &str,
-            _days: i64,
+            // _days: i64, // Removed
         ) -> crate::error::Result<CountryAirQuality> {
             let mut state = self.state.lock().unwrap();
             state.get_average_called = true;
@@ -623,13 +635,7 @@ mod tests {
                 panic!("MockDatabase::get_latest_measurements_by_city called without expectation")
             })
         }
-        // Mock implementations for state detection methods used in App::new
-        async fn is_schema_initialized(&self) -> crate::error::Result<bool> {
-            Ok(self.state.lock().unwrap().init_schema_called)
-        }
-        async fn has_data_imported(&self) -> crate::error::Result<bool> {
-            Ok(self.state.lock().unwrap().insert_measurements_called)
-        }
+        // Removed unused mock methods is_schema_initialized and has_data_imported
     }
 
     // --- Test Harness (simplified version of App for testing command logic) ---
@@ -651,7 +657,8 @@ mod tests {
                 Commands::InitDb => self.run_init_db().await,
                 Commands::Import { days } => self.run_import(days).await,
                 Commands::MostPolluted => self.run_most_polluted().await,
-                Commands::Average(args) => self.run_average(&args.country, args.days).await,
+                // Call run_average without days arg
+                Commands::Average(args) => self.run_average(&args.country).await,
                 Commands::Measurements(args) => self.run_measurements_table(&args.country).await,
             }
         }
@@ -679,12 +686,14 @@ mod tests {
             // In real app, this result would be formatted and printed
             Ok(())
         }
-        async fn run_average(&self, country: &str, days: i64) -> crate::error::Result<()> {
+        // Remove days parameter from test harness function
+        async fn run_average(&self, country: &str) -> crate::error::Result<()> {
             let country_code = country.to_uppercase();
             if !COUNTRIES.contains(&country_code.as_str()) {
                 return Err(AppError::Cli(format!("Invalid country code: {}", country)));
             }
-            let _result = self.db.get_average_air_quality(&country_code, days).await?;
+            // Call DB function without days (already fixed, ensuring it stays)
+            let _result = self.db.get_average_air_quality(&country_code).await?;
             // In real app, this result would be formatted and printed
             Ok(())
         }
@@ -758,11 +767,12 @@ mod tests {
             avg_co: None,
             measurement_count: 10,
         };
+        // Update expectation call to match the new signature (no days)
         app.db.expect_get_average(Ok(expected_average));
 
+        // Create AverageArgs without the days field (already fixed, ensuring it stays)
         let command = Commands::Average(AverageArgs {
             country: "NL".to_string(),
-            days: 5,
         });
         let result = app.run_command(command).await;
         assert!(result.is_ok());
@@ -773,9 +783,9 @@ mod tests {
     async fn test_cmd_average_invalid_country() {
         let app = TestApp::new();
         // No DB expectation needed as it should fail validation first
+        // Create AverageArgs without the days field (already fixed, ensuring it stays)
         let command = Commands::Average(AverageArgs {
             country: "XX".to_string(), // Invalid country code
-            days: 5,
         });
         let result = app.run_command(command).await;
         assert!(result.is_err());

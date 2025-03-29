@@ -140,14 +140,8 @@ async fn main() -> Result<()> {
                             continue;
                         },
                     };
-                    let days = match cli::prompt_days() {
-                        Ok(d) => d,
-                        Err(e) => {
-                            println!("{} {}", "Failed to get days:".red(), e);
-                            continue;
-                        },
-                    };
-                    Some(Commands::Average(AverageArgs { country, days }))
+                    // Remove prompt_days() call and days field
+                    Some(Commands::Average(AverageArgs { country }))
                 },
                 4 => match cli::prompt_country() {
                     Ok(country) => Some(Commands::Measurements(MeasurementsArgs { country })),
