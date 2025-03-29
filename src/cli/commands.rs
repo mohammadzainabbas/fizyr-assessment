@@ -490,12 +490,12 @@ mod tests {
         insert_measurements_called: bool,
         get_most_polluted_called: bool,
         get_average_called: bool,
-        get_measurements_called: bool,
+        // get_measurements_called: bool, // Removed unused field
         get_latest_by_city_called: bool, // Added flag for new method
         // Store expected return values for query methods
         most_polluted_result: Option<Result<PollutionRanking>>,
         average_result: Option<Result<CountryAirQuality>>,
-        measurements_result: Option<Result<Vec<DbMeasurement>>>,
+        // measurements_result: Option<Result<Vec<DbMeasurement>>>, // Removed unused field
         latest_by_city_result: Option<Result<Vec<CityLatestMeasurements>>>, // Added result for new method
     }
 
@@ -520,10 +520,7 @@ mod tests {
         fn expect_get_average(&self, result: Result<CountryAirQuality>) {
             self.state.lock().unwrap().average_result = Some(result);
         }
-        // Keep old expect_get_measurements for now, might remove later if unused
-        fn expect_get_measurements(&self, result: Result<Vec<DbMeasurement>>) {
-            self.state.lock().unwrap().measurements_result = Some(result);
-        }
+        // Removed unused expect_get_measurements method
         // Expectation for the new method
         fn expect_get_latest_by_city(&self, result: Result<Vec<CityLatestMeasurements>>) {
             self.state.lock().unwrap().latest_by_city_result = Some(result);
@@ -563,14 +560,7 @@ mod tests {
             })
         }
 
-        // Keep old get_measurements for now
-        async fn get_measurements_for_country(&self, _country: &str) -> Result<Vec<DbMeasurement>> {
-            let mut state = self.state.lock().unwrap();
-            state.get_measurements_called = true;
-            state.measurements_result.take().unwrap_or_else(|| {
-                panic!("MockDatabase::get_measurements_for_country called without expectation")
-            })
-        }
+        // Removed unused get_measurements_for_country method
 
         // Mock for the new method
         async fn get_latest_measurements_by_city(
@@ -667,33 +657,7 @@ mod tests {
         }
     }
 
-    // Helper to create a DbMeasurement for tests
-    // Imports moved to the top of the module
-
-    fn create_db_measurement(
-        country: &str,
-        parameter: &str,
-        value: f64, // Keep input as f64 for convenience
-        days_ago: i64,
-    ) -> DbMeasurement {
-        DbMeasurement {
-            id: Some(rand::random::<i32>().abs()), // Random ID for test
-            location_id: 12345,
-            location: format!("Test DB Loc {}", country),
-            parameter: parameter.to_string(),
-            value: Decimal::from_f64(value).unwrap_or_default(), // Convert to Decimal
-            unit: "µg/m³".to_string(),
-            date_utc: Utc::now() - Duration::days(days_ago),
-            date_local: format!(
-                "{}",
-                (Utc::now() - Duration::days(days_ago)).format("%Y-%m-%dT%H:%M:%S%z")
-            ),
-            country: country.to_string(),
-            city: Some(format!("Test DB City {}", country)),
-            latitude: Some(52.0),
-            longitude: Some(5.0),
-        }
-    }
+    // Removed unused helper function create_db_measurement
 
     // --- Tests ---
     // --- Updated Tests ---
