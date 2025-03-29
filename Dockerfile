@@ -15,7 +15,7 @@ COPY rustfmt.toml ./
 RUN cargo build --release
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS runtime
 
 # Install OpenSSL and other required packages
 RUN apt-get update && \

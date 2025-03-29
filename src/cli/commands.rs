@@ -474,12 +474,10 @@ pub fn prompt_days() -> Result<i64> {
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::models::{
-        CityLatestMeasurements, CountryAirQuality, DbMeasurement, Measurement, PollutionRanking,
-    }; // Added CityLatestMeasurements
+    use crate::models::{CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking}; // Added CityLatestMeasurements
     use chrono::{Duration, Utc};
-    use num_traits::FromPrimitive; // Correct import path for FromPrimitive
-    use sqlx::types::Decimal; // Correct import path for Decimal
+    // Correct import path for FromPrimitive
+    // Correct import path for Decimal
     use std::sync::{Arc, Mutex};
 
     // --- Mock Database State --- (Keep as is)

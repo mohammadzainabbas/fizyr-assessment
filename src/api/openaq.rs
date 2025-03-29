@@ -25,6 +25,7 @@ impl OpenAQClient {
 
     /// Create a new OpenAQ API client with a custom base URL (for testing)
     #[cfg(test)]
+    #[allow(dead_code)] // Allow dead code for this test helper function
     pub fn new_with_base_url(api_key: String, base_url: &str) -> Self {
         Self {
             client: Client::new(),
