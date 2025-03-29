@@ -29,11 +29,11 @@ async fn main() -> Result<()> {
                 error!("Application error: {:?}", e);
                 return Err(e);
             }
-        }
+        },
         Err(e) => {
             error!("Failed to initialize application: {:?}", e);
             return Err(e);
-        }
+        },
     }
 
     info!("Application completed successfully");

@@ -1,5 +1,5 @@
-mod openaq;
 mod mock;
+mod openaq;
 
-pub use openaq::*;
 pub use mock::*;
+pub use openaq::*;

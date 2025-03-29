@@ -22,7 +22,7 @@ impl OpenAQClient {
             base_url: BASE_URL.to_string(),
         }
     }
-    
+
     /// Create a new OpenAQ API client with a custom base URL (for testing)
     #[cfg(test)]
     pub fn new_with_base_url(api_key: String, base_url: &str) -> Self {
@@ -36,9 +36,9 @@ impl OpenAQClient {
     /// Get all measurements for a specific country
     pub async fn get_measurements_for_country(&self, country: &str) -> Result<Vec<Measurement>> {
         info!("Fetching measurements for country: {}", country);
-        
+
         let url = format!("{}/measurements", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -50,52 +50,65 @@ impl OpenAQClient {
                 error!("Error fetching measurements for {}: {}", country, e);
                 AppError::ApiError(e)
             })?;
-            
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("API returned non-success status: {} with body: {}", status, body);
+            error!(
+                "API returned non-success status: {} with body: {}",
+                status, body
+            );
             return Err(AppError::ConfigError(format!("API error: {}", status)));
         }
-        
+
         let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
             error!("Error parsing API response: {}", e);
             AppError::ApiError(e)
         })?;
-        
-        debug!("Received {} measurements for {}", api_response.results.len(), country);
-        
+
+        debug!(
+            "Received {} measurements for {}",
+            api_response.results.len(),
+            country
+        );
+
         Ok(api_response.results)
     }
 
     /// Get measurements for a list of countries with parallel processing
-    pub async fn get_measurements_for_countries(&self, countries: &[&str]) -> Result<Vec<Measurement>> {
+    pub async fn get_measurements_for_countries(
+        &self,
+        countries: &[&str],
+    ) -> Result<Vec<Measurement>> {
         info!("Fetching measurements for {} countries", countries.len());
-        
+
         let mut all_measurements = Vec::new();
-        
+
         for country in countries {
             match self.get_measurements_for_country(country).await {
                 Ok(measurements) => {
                     all_measurements.extend(measurements);
-                }
+                },
                 Err(e) => {
                     error!("Error fetching measurements for {}: {:?}", country, e);
                     // Continue with other countries even if one fails
-                }
+                },
             }
         }
-        
+
         info!("Total measurements collected: {}", all_measurements.len());
         Ok(all_measurements)
     }
 
     /// Get latest measurements for a specific country
-    pub async fn get_latest_measurements_for_country(&self, country: &str) -> Result<Vec<Measurement>> {
+    pub async fn get_latest_measurements_for_country(
+        &self,
+        country: &str,
+    ) -> Result<Vec<Measurement>> {
         info!("Fetching latest measurements for country: {}", country);
-        
+
         let url = format!("{}/latest", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -107,21 +120,28 @@ impl OpenAQClient {
                 error!("Error fetching latest measurements for {}: {}", country, e);
                 AppError::ApiError(e)
             })?;
-            
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("API returned non-success status: {} with body: {}", status, body);
+            error!(
+                "API returned non-success status: {} with body: {}",
+                status, body
+            );
             return Err(AppError::ConfigError(format!("API error: {}", status)));
         }
-        
+
         let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
             error!("Error parsing API response: {}", e);
             AppError::ApiError(e)
         })?;
-        
-        debug!("Received {} latest measurements for {}", api_response.results.len(), country);
-        
+
+        debug!(
+            "Received {} latest measurements for {}",
+            api_response.results.len(),
+            country
+        );
+
         Ok(api_response.results)
     }
 
@@ -136,10 +156,10 @@ impl OpenAQClient {
             "Fetching measurements for country: {} from {} to {}",
             country, date_from, date_to
         );
-        
+
         // Try a different endpoint format for API v3
         let url = format!("{}/measurements", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
@@ -153,28 +173,34 @@ impl OpenAQClient {
             .send()
             .await
             .map_err(|e| {
-                error!("Error fetching measurements for {} in date range: {}", country, e);
+                error!(
+                    "Error fetching measurements for {} in date range: {}",
+                    country, e
+                );
                 AppError::ApiError(e)
             })?;
-            
+
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            error!("API returned non-success status: {} with body: {}", status, body);
+            error!(
+                "API returned non-success status: {} with body: {}",
+                status, body
+            );
             return Err(AppError::ConfigError(format!("API error: {}", status)));
         }
-        
+
         let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
             error!("Error parsing API response: {}", e);
             AppError::ApiError(e)
         })?;
-        
+
         debug!(
             "Received {} measurements for {} in date range",
             api_response.results.len(),
             country
         );
-        
+
         Ok(api_response.results)
     }
 }

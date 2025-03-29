@@ -1,8 +1,8 @@
 use crate::error::Result;
 use crate::models::{Coordinates, Dates, Measurement};
 use chrono::{DateTime, Duration, Utc};
-use rand::{thread_rng, Rng};
 use rand::distributions::{Distribution, Uniform};
+use rand::{thread_rng, Rng};
 use std::collections::HashMap;
 
 /// Mock data provider for OpenAQ API
@@ -44,30 +44,31 @@ impl MockDataProvider {
         // Generate a reasonable number of measurements for the date range
         let days_diff = (date_to - date_from).num_days();
         let num_measurements = rng.gen_range(50..200);
-        
+
         let mut measurements = Vec::with_capacity(num_measurements as usize);
-        
+
         // Create mock locations for each country
         let locations = self.get_mock_locations_for_country(country);
-        
+
         // For each measurement, generate a random date within the range
         for _ in 0..num_measurements {
             let random_days = rng.gen_range(0..days_diff);
             let random_hours = rng.gen_range(0..24);
             let random_mins = rng.gen_range(0..60);
-            
-            let measurement_date = date_from + Duration::days(random_days) 
-                + Duration::hours(random_hours) 
+
+            let measurement_date = date_from
+                + Duration::days(random_days)
+                + Duration::hours(random_hours)
                 + Duration::minutes(random_mins);
-                
+
             // Get a random location for this country
             let location_idx = rng.gen_range(0..locations.len());
             let (location_name, coords) = &locations[location_idx];
-            
+
             // Add some variation to the coordinates
             let lat_variation = rng.gen_range(-0.01..0.01);
             let lon_variation = rng.gen_range(-0.01..0.01);
-            
+
             let parameter = match param_dist.sample(&mut rng) {
                 0 => "pm25",
                 1 => "pm10",
@@ -79,7 +80,7 @@ impl MockDataProvider {
 
             // Generate a reasonable value based on parameter and country
             let value = self.generate_mock_value(country, parameter, &mut rng);
-            
+
             // Create a measurement
             let measurement = Measurement {
                 location_id: (location_idx as i64) + 1000, // Start from 1000
@@ -98,16 +99,16 @@ impl MockDataProvider {
                 country: country.to_string(),
                 city: Some(location_name.clone()),
             };
-            
+
             measurements.push(measurement);
         }
-        
+
         // Sort by date
         measurements.sort_by(|a, b| a.date.utc.cmp(&b.date.utc));
-        
+
         Ok(measurements)
     }
-    
+
     /// Get mock locations for a specific country
     fn get_mock_locations_for_country(&self, country: &str) -> Vec<(String, (f64, f64))> {
         match country {
@@ -150,7 +151,7 @@ impl MockDataProvider {
             _ => vec![("Unknown".to_string(), (0.0, 0.0))],
         }
     }
-    
+
     /// Generate a mock value for a parameter based on country
     /// The values are based on realistic AQI values for each parameter
     fn generate_mock_value(&self, country: &str, parameter: &str, rng: &mut impl Rng) -> f64 {
@@ -162,27 +163,30 @@ impl MockDataProvider {
             ("no2", (10.0, 60.0)),
             ("so2", (5.0, 30.0)),
             ("co", (400.0, 1500.0)),
-        ].iter().cloned().collect();
-        
+        ]
+        .iter()
+        .cloned()
+        .collect();
+
         // Country pollution factors (1.0 is neutral, higher is more polluted)
         let country_factor = match country {
-            "NL" => 0.8,  // Netherlands - cleaner air
-            "DE" => 0.9,  // Germany
-            "FR" => 0.9,  // France
-            "GR" => 1.1,  // Greece
-            "ES" => 0.9,  // Spain
-            "PK" => 1.5,  // Pakistan - more polluted
+            "NL" => 0.8, // Netherlands - cleaner air
+            "DE" => 0.9, // Germany
+            "FR" => 0.9, // France
+            "GR" => 1.1, // Greece
+            "ES" => 0.9, // Spain
+            "PK" => 1.5, // Pakistan - more polluted
             _ => 1.0,
         };
-        
+
         let (min, max) = base_ranges.get(parameter).unwrap_or(&(0.0, 10.0));
         let adjusted_min = min * country_factor;
         let adjusted_max = max * country_factor;
-        
+
         // Generate a random value within the adjusted range
         rng.gen_range(adjusted_min..adjusted_max)
     }
-    
+
     /// Get the unit for a parameter
     fn get_unit_for_parameter(&self, parameter: &str) -> String {
         match parameter {

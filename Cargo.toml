@@ -2,8 +2,14 @@
 name = "fizyr-assessment"
 version = "0.1.0"
 edition = "2021"
-authors = ["Mohammad Zain Abbas"]
+authors = ["Mohammad Zain Abbas <mohammadzainabbas@gmail.com>"]
 description = "CLI tool for air quality data processing"
+license = "MIT"
+homepage = "https://github.com/mohammadzainabbas/fizyr-assessment"
+repository = "https://github.com/mohammadzainabbas/fizyr-assessment"
+keywords = ["rust", "fizyr-assessment", "air-quality-cli", "cli"]
+categories = ["command-line-utilities"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 # CLI
