@@ -39,7 +39,7 @@ impl MockDataProvider {
         }
 
         let mut rng = thread_rng();
-        let param_dist = Uniform::new(0, 5);
+        let param_dist = Uniform::new(0, 6); // Changed upper bound to 6 (exclusive) to include 5
 
         // Generate a reasonable number of measurements for the date range
         let days_diff = (date_to - date_from).num_days();

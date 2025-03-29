@@ -4,7 +4,7 @@ use crate::error::{AppError, Result};
 use chrono::{Duration, Utc};
 // Removed clap imports
 use colored::*;
-use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table}; // Added comfy-table imports
+use comfy_table::{presets::UTF8_FULL, Cell, Color, ContentArrangement, Table}; // Added Color
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
@@ -232,24 +232,43 @@ impl App {
 
         pb.finish_and_clear(); // Clear spinner before printing results
 
-        println!(
-            "{} {}",
-            "Most polluted country:".green(),
-            result.country.bold()
-        );
-        println!(
-            "{} {:.2}",
-            "Pollution index:".green(),
-            result.pollution_index
-        );
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                Cell::new("Metric").fg(Color::Green),
+                Cell::new("Value").fg(Color::Green),
+            ]);
 
+        table.add_row(vec![
+            Cell::new("Most Polluted Country"),
+            Cell::new(&result.country)
+                .fg(Color::Cyan)
+                .add_attribute(comfy_table::Attribute::Bold), // Use add_attribute
+        ]);
+        table.add_row(vec![
+            Cell::new("Pollution Index"),
+            Cell::new(format!("{:.2}", result.pollution_index)),
+        ]);
         if let Some(pm25) = result.pm25_avg {
-            println!("  PM2.5 average: {:.2} µg/m³", pm25);
+            table.add_row(vec![
+                Cell::new("Avg PM2.5 (µg/m³)"),
+                Cell::new(format!("{:.2}", pm25)),
+            ]);
+        } else {
+            table.add_row(vec![Cell::new("Avg PM2.5 (µg/m³)"), Cell::new("-")]);
+        }
+        if let Some(pm10) = result.pm10_avg {
+            table.add_row(vec![
+                Cell::new("Avg PM10 (µg/m³)"),
+                Cell::new(format!("{:.2}", pm10)),
+            ]);
+        } else {
+            table.add_row(vec![Cell::new("Avg PM10 (µg/m³)"), Cell::new("-")]);
         }
 
-        if let Some(pm10) = result.pm10_avg {
-            println!("  PM10 average: {:.2} µg/m³", pm10);
-        }
+        println!("{table}");
 
         Ok(())
     }
@@ -287,37 +306,48 @@ impl App {
         pb.finish_and_clear();
 
         println!(
-            "{}-{} {}",
+            "{}-{} {} ({} {})",
             format!("{}", days).bold(),
             "day average air quality for".green(),
-            result.country.bold()
+            result.country.bold().cyan(),
+            "Based on".dimmed(),
+            format!("{} measurements", result.measurement_count).dimmed()
         );
-        println!("Based on {} measurements", result.measurement_count);
-        println!("------------------------------------------");
 
-        if let Some(pm25) = result.avg_pm25 {
-            println!("  PM2.5: {:.2} µg/m³", pm25);
-        }
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                Cell::new("Parameter").fg(Color::Green),
+                Cell::new("Average Value (µg/m³)").fg(Color::Green),
+            ]);
 
-        if let Some(pm10) = result.avg_pm10 {
-            println!("  PM10: {:.2} µg/m³", pm10);
-        }
+        let format_avg = |val: Option<f64>| -> String {
+            val.map(|v| format!("{:.2}", v))
+                .unwrap_or_else(|| "-".to_string())
+        };
 
-        if let Some(o3) = result.avg_o3 {
-            println!("  O3: {:.2} µg/m³", o3);
-        }
+        table.add_row(vec![
+            Cell::new("PM2.5"),
+            Cell::new(format_avg(result.avg_pm25)),
+        ]);
+        table.add_row(vec![
+            Cell::new("PM10"),
+            Cell::new(format_avg(result.avg_pm10)),
+        ]);
+        table.add_row(vec![Cell::new("O3"), Cell::new(format_avg(result.avg_o3))]);
+        table.add_row(vec![
+            Cell::new("NO2"),
+            Cell::new(format_avg(result.avg_no2)),
+        ]);
+        table.add_row(vec![
+            Cell::new("SO2"),
+            Cell::new(format_avg(result.avg_so2)),
+        ]);
+        table.add_row(vec![Cell::new("CO"), Cell::new(format_avg(result.avg_co))]);
 
-        if let Some(no2) = result.avg_no2 {
-            println!("  NO2: {:.2} µg/m³", no2);
-        }
-
-        if let Some(so2) = result.avg_so2 {
-            println!("  SO2: {:.2} µg/m³", so2);
-        }
-
-        if let Some(co) = result.avg_co {
-            println!("  CO: {:.2} µg/m³", co);
-        }
+        println!("{table}");
 
         Ok(())
     }
@@ -370,14 +400,14 @@ impl App {
             .load_preset(UTF8_FULL)
             .set_content_arrangement(ContentArrangement::Dynamic)
             .set_header(vec![
-                Cell::new("City"),
-                Cell::new("PM2.5 (µg/m³)"),
-                Cell::new("PM10 (µg/m³)"),
-                Cell::new("O3 (µg/m³)"),
-                Cell::new("NO2 (µg/m³)"),
-                Cell::new("SO2 (µg/m³)"),
-                Cell::new("CO (µg/m³)"),
-                Cell::new("Last Updated (UTC)"),
+                Cell::new("City").fg(Color::Green),
+                Cell::new("PM2.5 (µg/m³)").fg(Color::Green),
+                Cell::new("PM10 (µg/m³)").fg(Color::Green),
+                Cell::new("O3 (µg/m³)").fg(Color::Green),
+                Cell::new("NO2 (µg/m³)").fg(Color::Green),
+                Cell::new("SO2 (µg/m³)").fg(Color::Green),
+                Cell::new("CO (µg/m³)").fg(Color::Green),
+                Cell::new("Last Updated (UTC)").fg(Color::Green),
             ]);
 
         // Helper to format Option<Decimal>
@@ -389,7 +419,7 @@ impl App {
         // Add rows to the table
         for measurement in city_measurements {
             table.add_row(vec![
-                Cell::new(measurement.city),
+                Cell::new(measurement.city).fg(Color::Cyan), // Color city name
                 Cell::new(format_value(measurement.pm25)),
                 Cell::new(format_value(measurement.pm10)),
                 Cell::new(format_value(measurement.o3)),

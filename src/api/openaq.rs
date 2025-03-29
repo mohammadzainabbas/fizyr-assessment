@@ -78,9 +78,26 @@ impl OpenAQClient {
             Ok(resp) => resp, // Status was success, continue with the response
             Err(e) => {
                 // Status was error, error_for_status consumed response and gave us the error
-                error!("API returned non-success status: {}", e);
-                // Log the body if possible (error might not have body readily available here)
-                // let body = e. // Cannot easily get body from error directly in this context
+                let status = e.status();
+                let url = e.url().map(|u| u.as_str()).unwrap_or("unknown URL");
+                // Corrected parenthesis placement in error! macro
+                error!(
+                    "API request to {} failed with status {}: {}",
+                    url,
+                    status.unwrap_or(reqwest::StatusCode::default()), // Use full path for StatusCode
+                    e
+                );
+                if status == Some(reqwest::StatusCode::NOT_FOUND) {
+                    // Use full path
+                    error!("Received 404 Not Found. Please check the API endpoint/parameters and ensure your OPENAQ_KEY is valid for v3.");
+                } else if status == Some(reqwest::StatusCode::UNAUTHORIZED) // Use full path
+                    || status == Some(reqwest::StatusCode::FORBIDDEN)
+                // Use full path
+                {
+                    error!(
+                        "Received 401/403. Please check your OPENAQ_KEY validity and permissions."
+                    );
+                }
                 return Err(AppError::Api(std::sync::Arc::new(e))); // Wrap the error
             },
         };
