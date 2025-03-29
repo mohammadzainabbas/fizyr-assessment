@@ -1,7 +1,9 @@
 use crate::error::{AppError, Result};
 use crate::models::{CountryAirQuality, DbMeasurement, Measurement, PollutionRanking};
 use chrono::{DateTime, Utc};
+// Removed unused FromPrimitive import
 use rayon::prelude::*;
+// Removed unused Decimal import
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tracing::{debug, error, info};
 
@@ -21,7 +23,7 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to connect to database: {}", e);
-                AppError::DbError(e)
+                AppError::Db(e.into()) // Use renamed variant Db
             })?;
 
         info!("Connected to database successfully");
@@ -57,7 +59,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create measurements table: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         // Create country index
@@ -68,7 +70,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create country index: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         // Create parameter index
@@ -79,7 +81,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create parameter index: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         // Create date index
@@ -90,7 +92,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create date index: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         info!("Database schema initialized successfully");
@@ -119,7 +121,7 @@ impl Database {
         // Use a transaction for better performance
         let mut tx = self.pool.begin().await.map_err(|e| {
             error!("Failed to begin transaction: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         for m in &db_measurements {
@@ -134,7 +136,7 @@ impl Database {
             .bind(m.location_id)
             .bind(&m.location)
             .bind(&m.parameter)
-            .bind(&m.value)
+            .bind(m.value) // Removed borrow &
             .bind(&m.unit)
             .bind(m.date_utc)
             .bind(&m.date_local)
@@ -146,13 +148,13 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to insert measurement: {}", e);
-                AppError::DbError(e)
+                AppError::Db(e.into()) // Use renamed variant Db
             })?;
         }
 
         tx.commit().await.map_err(|e| {
             error!("Failed to commit transaction: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         info!("Successfully inserted {} measurements", measurements.len());
@@ -199,7 +201,7 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to query most polluted country: {}", e);
-                AppError::DbError(e)
+                AppError::Db(e.into()) // Use renamed variant Db
             })?;
 
         match result {
@@ -276,7 +278,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to query average air quality: {}", e);
-            AppError::DbError(e)
+            AppError::Db(e.into()) // Use renamed variant Db
         })?;
 
         match result {
@@ -334,7 +336,7 @@ impl Database {
                 i64,
                 String,
                 String,
-                f64,
+                sqlx::types::Decimal, // Use full path here
                 String,
                 DateTime<Utc>,
                 String,
@@ -346,7 +348,7 @@ impl Database {
         >(
             r#"
             SELECT 
-                id, location_id, location, parameter, value::DOUBLE PRECISION as value, unit, 
+                id, location_id, location, parameter, value, unit, -- Removed ::DOUBLE PRECISION cast
                 date_utc, date_local, country, city, latitude, longitude
             FROM measurements
             WHERE country = $1
@@ -357,10 +359,10 @@ impl Database {
         .bind(country)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| {
-            error!("Failed to fetch measurements for {}: {}", country, e);
-            AppError::DbError(e)
-        })?;
+            .map_err(|e| {
+                error!("Failed to fetch measurements for {}: {}", country, e);
+                AppError::Db(e.into()) // Use renamed variant Db
+            })?;
 
         let result: Vec<DbMeasurement> = measurements
             .into_iter()
@@ -406,9 +408,10 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{Date, Measurement};
-    use chrono::{Duration, TimeZone, Utc};
-    use sqlx::PgPool;
+    use crate::models::{Dates, Measurement};
+    use chrono::{Duration, Utc};
+    use num_traits::FromPrimitive;
+    use sqlx::{types::Decimal, PgPool, Row}; // Keep Decimal here // Keep FromPrimitive for test assertion
 
     // Helper function to create a test measurement
     fn create_test_measurement(
@@ -476,7 +479,7 @@ mod tests {
         )
         .fetch_one(&db.pool)
         .await?;
-        assert!(row.get::<bool, _>(0));
+        assert!(row.get::<bool, _>(0)); // Now Row trait is in scope
 
         // Check if indexes exist (optional, but good practice)
         let indexes = [
@@ -489,7 +492,7 @@ mod tests {
                 .bind(index_name)
                 .fetch_one(&db.pool)
                 .await?;
-            assert!(row.get::<bool, _>(0));
+            assert!(row.get::<bool, _>(0)); // Now Row trait is in scope
         }
 
         Ok(())
@@ -519,7 +522,8 @@ mod tests {
                 .await?;
         assert_eq!(row.country, "NL");
         assert_eq!(row.parameter, "pm25");
-        assert_eq!(row.value, 10.0);
+        // Compare Decimal with Decimal::from_f64
+        assert_eq!(row.value, Decimal::from_f64(10.0).unwrap()); // Use Decimal::from_f64
 
         Ok(())
     }

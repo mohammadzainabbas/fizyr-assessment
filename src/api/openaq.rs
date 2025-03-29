@@ -1,7 +1,8 @@
 use crate::error::{AppError, Result};
 use crate::models::{Measurement, OpenAQMeasurementResponse};
 use chrono::{DateTime, Utc};
-use reqwest::Client;
+use reqwest::{Client, StatusCode}; // Added StatusCode
+                                   // Removed unused Arc import
 use tracing::{debug, error, info};
 
 const BASE_URL: &str = "https://api.openaq.org/v3";
@@ -33,117 +34,10 @@ impl OpenAQClient {
         }
     }
 
-    /// Get all measurements for a specific country
-    pub async fn get_measurements_for_country(&self, country: &str) -> Result<Vec<Measurement>> {
-        info!("Fetching measurements for country: {}", country);
-
-        let url = format!("{}/measurements", self.base_url);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-API-Key", &self.api_key)
-            .query(&[("country", country), ("limit", "1000")])
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Error fetching measurements for {}: {}", country, e);
-                AppError::ApiError(e)
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!(
-                "API returned non-success status: {} with body: {}",
-                status, body
-            );
-            return Err(AppError::ConfigError(format!("API error: {}", status)));
-        }
-
-        let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
-            error!("Error parsing API response: {}", e);
-            AppError::ApiError(e)
-        })?;
-
-        debug!(
-            "Received {} measurements for {}",
-            api_response.results.len(),
-            country
-        );
-
-        Ok(api_response.results)
-    }
-
-    /// Get measurements for a list of countries with parallel processing
-    pub async fn get_measurements_for_countries(
-        &self,
-        countries: &[&str],
-    ) -> Result<Vec<Measurement>> {
-        info!("Fetching measurements for {} countries", countries.len());
-
-        let mut all_measurements = Vec::new();
-
-        for country in countries {
-            match self.get_measurements_for_country(country).await {
-                Ok(measurements) => {
-                    all_measurements.extend(measurements);
-                },
-                Err(e) => {
-                    error!("Error fetching measurements for {}: {:?}", country, e);
-                    // Continue with other countries even if one fails
-                },
-            }
-        }
-
-        info!("Total measurements collected: {}", all_measurements.len());
-        Ok(all_measurements)
-    }
-
-    /// Get latest measurements for a specific country
-    pub async fn get_latest_measurements_for_country(
-        &self,
-        country: &str,
-    ) -> Result<Vec<Measurement>> {
-        info!("Fetching latest measurements for country: {}", country);
-
-        let url = format!("{}/latest", self.base_url);
-
-        let response = self
-            .client
-            .get(&url)
-            .header("X-API-Key", &self.api_key)
-            .query(&[("country", country), ("limit", "1000")])
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Error fetching latest measurements for {}: {}", country, e);
-                AppError::ApiError(e)
-            })?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!(
-                "API returned non-success status: {} with body: {}",
-                status, body
-            );
-            return Err(AppError::ConfigError(format!("API error: {}", status)));
-        }
-
-        let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
-            error!("Error parsing API response: {}", e);
-            AppError::ApiError(e)
-        })?;
-
-        debug!(
-            "Received {} latest measurements for {}",
-            api_response.results.len(),
-            country
-        );
-
-        Ok(api_response.results)
-    }
+    // Removed unused methods:
+    // - get_measurements_for_country
+    // - get_measurements_for_countries
+    // - get_latest_measurements_for_country
 
     /// Get measurements for a specific country within a date range
     pub async fn get_measurements_for_country_in_date_range(
@@ -177,22 +71,25 @@ impl OpenAQClient {
                     "Error fetching measurements for {} in date range: {}",
                     country, e
                 );
-                AppError::ApiError(e)
+                AppError::Api(e.into()) // Use renamed variant Api
             })?;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            error!(
-                "API returned non-success status: {} with body: {}",
-                status, body
-            );
-            return Err(AppError::ConfigError(format!("API error: {}", status)));
-        }
+        // Check status and handle error by consuming response with error_for_status()
+        let response = match response.error_for_status() {
+            Ok(resp) => resp, // Status was success, continue with the response
+            Err(e) => {
+                // Status was error, error_for_status consumed response and gave us the error
+                error!("API returned non-success status: {}", e);
+                // Log the body if possible (error might not have body readily available here)
+                // let body = e. // Cannot easily get body from error directly in this context
+                return Err(AppError::Api(std::sync::Arc::new(e))); // Wrap the error
+            },
+        };
 
+        // If status was success, parse JSON (consumes response)
         let api_response: OpenAQMeasurementResponse = response.json().await.map_err(|e| {
             error!("Error parsing API response: {}", e);
-            AppError::ApiError(e)
+            AppError::Api(e.into()) // Use renamed variant Api
         })?;
 
         debug!(

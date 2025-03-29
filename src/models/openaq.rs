@@ -1,38 +1,53 @@
 use chrono::{DateTime, Utc};
+use num_traits::FromPrimitive; // Correct import path
 use serde::{Deserialize, Serialize};
+use sqlx::types::Decimal; // Correct import: Decimal
 
 /// Response from OpenAQ API for measurements
 #[derive(Debug, Deserialize)]
 pub struct OpenAQMeasurementResponse {
-    pub meta: Meta,
+    #[serde(rename = "meta")] // Keep original name for deserialization
+    pub _meta: Meta, // Prefixed with underscore
     pub results: Vec<Measurement>,
 }
 
 /// Metadata from OpenAQ API response
 #[derive(Debug, Deserialize)]
 pub struct Meta {
-    pub name: String,
-    pub license: String,
-    pub website: String,
-    pub page: i32,
-    pub limit: i32,
-    pub found: i32,
+    #[serde(rename = "name")]
+    pub _name: String, // Prefixed
+    #[serde(rename = "license")]
+    pub _license: String, // Prefixed
+    #[serde(rename = "website")]
+    pub _website: String, // Prefixed
+    #[serde(rename = "page")]
+    pub _page: i32, // Prefixed
+    #[serde(rename = "limit")]
+    pub _limit: i32, // Prefixed
+    #[serde(rename = "found")]
+    pub _found: i32, // Prefixed
 }
 
 /// Response from OpenAQ API for countries
 #[derive(Debug, Deserialize)]
 pub struct OpenAQCountryResponse {
-    pub meta: Meta,
-    pub results: Vec<Country>,
+    #[serde(rename = "meta")]
+    pub _meta: Meta, // Prefixed
+    #[serde(rename = "results")]
+    pub _results: Vec<Country>, // Prefixed
 }
 
 /// Country information from OpenAQ API
 #[derive(Debug, Deserialize)]
 pub struct Country {
-    pub code: String,
-    pub name: String,
-    pub locations: i32,
-    pub count: i64,
+    #[serde(rename = "code")]
+    pub _code: String, // Prefixed
+    #[serde(rename = "name")]
+    pub _name: String, // Prefixed
+    #[serde(rename = "locations")]
+    pub _locations: i32, // Prefixed
+    #[serde(rename = "count")]
+    pub _count: i64, // Prefixed
 }
 
 /// Measurement coordinate
@@ -71,13 +86,13 @@ pub struct Measurement {
 }
 
 /// Database representation of a measurement
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone, sqlx::FromRow)] // Added sqlx::FromRow
 pub struct DbMeasurement {
     pub id: Option<i32>,
     pub location_id: i64,
     pub location: String,
     pub parameter: String,
-    pub value: f64,
+    pub value: Decimal, // Changed to Decimal
     pub unit: String,
     pub date_utc: DateTime<Utc>,
     pub date_local: String,
@@ -94,7 +109,7 @@ impl From<Measurement> for DbMeasurement {
             location_id: m.location_id,
             location: m.location,
             parameter: m.parameter,
-            value: m.value,
+            value: Decimal::from_f64(m.value).unwrap_or_default(), // Convert f64 to Decimal
             unit: m.unit,
             date_utc: m.date.utc,
             date_local: m.date.local,
@@ -107,7 +122,7 @@ impl From<Measurement> for DbMeasurement {
 }
 
 /// Country air quality summary
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)] // Added Clone
 pub struct CountryAirQuality {
     pub country: String,
     pub avg_pm25: Option<f64>,
@@ -120,7 +135,7 @@ pub struct CountryAirQuality {
 }
 
 /// Pollution ranking by country
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)] // Added Clone
 pub struct PollutionRanking {
     pub country: String,
     pub pollution_index: f64,

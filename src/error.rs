@@ -1,27 +1,63 @@
+use std::sync::Arc; // Import Arc
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Clone)]
 pub enum AppError {
     #[error("API Error: {0}")]
-    ApiError(#[from] reqwest::Error),
+    Api(Arc<reqwest::Error>), // Renamed
 
     #[error("Database Error: {0}")]
-    DbError(#[from] sqlx::Error),
+    Db(Arc<sqlx::Error>), // Renamed
 
     #[error("Environment Error: {0}")]
-    EnvError(#[from] std::env::VarError),
+    Env(#[from] std::env::VarError), // Renamed
 
     #[error("I/O Error: {0}")]
-    IoError(#[from] std::io::Error),
-
-    #[error("Parsing Error: {0}")]
-    ParsingError(String),
+    Io(Arc<std::io::Error>), // Renamed
 
     #[error("CLI Error: {0}")]
-    CliError(String),
+    Cli(String), // Renamed
 
     #[error("Configuration Error: {0}")]
-    ConfigError(String),
+    Config(String), // Renamed
+
+    #[error("Dialoguer Error: {0}")]
+    Dialoguer(Arc<dialoguer::Error>), // Renamed
+
+    #[error("Progress Style Template Error: {0}")]
+    Template(Arc<indicatif::style::TemplateError>), // Renamed
 }
 
 pub type Result<T> = std::result::Result<T, AppError>;
+
+// Manual From implementations for Arc-wrapped errors (Update variant names)
+
+impl From<reqwest::Error> for AppError {
+    fn from(err: reqwest::Error) -> Self {
+        AppError::Api(Arc::new(err)) // Updated variant name
+    }
+}
+
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        AppError::Db(Arc::new(err)) // Updated variant name
+    }
+}
+
+impl From<std::io::Error> for AppError {
+    fn from(err: std::io::Error) -> Self {
+        AppError::Io(Arc::new(err)) // Updated variant name
+    }
+}
+
+impl From<dialoguer::Error> for AppError {
+    fn from(err: dialoguer::Error) -> Self {
+        AppError::Dialoguer(Arc::new(err)) // Updated variant name
+    }
+}
+
+impl From<indicatif::style::TemplateError> for AppError {
+    fn from(err: indicatif::style::TemplateError) -> Self {
+        AppError::Template(Arc::new(err)) // Updated variant name
+    }
+}

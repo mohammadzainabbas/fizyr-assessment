@@ -24,9 +24,10 @@ reqwest = { version = "0.11.22", features = ["json", "rustls-tls"], default-feat
 # Serialization/Deserialization
 serde = { version = "1.0.196", features = ["derive"] }
 serde_json = "1.0.113"
+num-traits = "0.2.19" # Moved from dev-dependencies
 
 # Database
-sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json"] }
+sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "decimal"] } # Added "decimal" feature
 
 # Environment variables
 dotenv = "0.15.0"
@@ -48,9 +49,15 @@ rayon = "1.9.0"
 # Random number generation
 rand = "0.8.5"
 
+# CLI interaction
+colored = "2.1.0"
+dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
+indicatif = "0.17.8"
+
 [dev-dependencies]
 mockito = "1.2.0"
 rstest = "0.18.2"
 serial_test = "2.0.0"
-sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json"] }
+sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "decimal"] } # Added "decimal" feature
+# num-traits moved to main dependencies
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
