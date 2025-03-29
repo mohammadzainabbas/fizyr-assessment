@@ -59,8 +59,8 @@ impl OpenAQClient {
             .header("X-API-Key", &self.api_key)
             .query(&[
                 ("country", country.to_string()),
-                ("date_from", date_from.to_rfc3339()),
-                ("date_to", date_to.to_rfc3339()),
+                ("dateFrom", date_from.to_rfc3339()), // Changed to camelCase
+                ("dateTo", date_to.to_rfc3339()),     // Changed to camelCase
                 ("limit", "1000".to_string()),
             ])
             .send()

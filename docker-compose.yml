@@ -26,9 +26,10 @@ services:
     depends_on:
       database:
         condition: service_healthy
-    # Removed volume mount to use the compiled binary from the Docker image
-    # The command here is just a default, can be overridden
-    command: ["import", "--days", "5"]
+    # Keep the container running and allow interaction
+    stdin_open: true # docker run -i
+    tty: true        # docker run -t
+    # Removed the default command to allow the interactive entrypoint to run
 
 volumes:
   postgres_data:
