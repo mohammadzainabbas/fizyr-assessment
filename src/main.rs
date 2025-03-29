@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
     let console_layer = fmt::layer()
         .with_writer(std::io::stderr)
         .with_ansi(true)
-        .with_filter(EnvFilter::new(Level::OFF.to_string())); // Set level to OFF
+        .with_filter(EnvFilter::new("off")); // Use "off" directive to disable console logging
 
     // Combine layers and initialize
     tracing_subscriber::registry()
@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         if let Some(command) = command_to_run {
             let command_result = app.run_command(command).await;
             if let Err(e) = command_result {
-                error!("Command execution failed: {:?}", e); // Goes to file and console
+                error!("Command execution failed: {:?}", e); // Goes to file only (unless RUST_LOG overrides)
                 println!(
                     "{} {}",
                     "Error executing command:".red(), // User-facing error
