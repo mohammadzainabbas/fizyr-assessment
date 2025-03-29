@@ -9,7 +9,7 @@ use crate::models::{
 // Removed unused DateTime, Utc
 use rayon::prelude::*;
 // Removed unused Decimal
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row}; // Added Row
 use tracing::{debug, error, info};
 
 /// Database operations
@@ -384,6 +384,30 @@ impl Database {
             country
         );
         Ok(results)
+    }
+
+    /// Check if the database schema (measurements table) exists.
+    pub async fn is_schema_initialized(&self) -> Result<bool> {
+        let query = "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'measurements')";
+        let result = sqlx::query(query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AppError::Db(e.into()))?;
+        Ok(result.try_get::<bool, _>(0).unwrap_or(false))
+    }
+
+    /// Check if any data has been imported into the measurements table.
+    pub async fn has_data_imported(&self) -> Result<bool> {
+        // First check if schema exists, if not, no data is imported
+        if !self.is_schema_initialized().await? {
+            return Ok(false);
+        }
+        let query = "SELECT EXISTS (SELECT 1 FROM measurements LIMIT 1)";
+        let result = sqlx::query(query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| AppError::Db(e.into()))?;
+        Ok(result.try_get::<bool, _>(0).unwrap_or(false))
     }
 }
 

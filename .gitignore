@@ -16,6 +16,9 @@
 # PostgreSQL data directory for Docker
 postgres_data/
 
+# Log files
+logs/
+
 # All markdown files
 *.md
 

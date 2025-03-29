@@ -41,7 +41,8 @@ thiserror = "1.0.57"
 
 # Logging
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] } # Added json feature for potential structured logging
+tracing-appender = "0.2" # Added for file logging
 
 # Parallelism
 rayon = "1.9.0"

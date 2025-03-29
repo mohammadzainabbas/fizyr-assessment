@@ -1,5 +1,5 @@
 # Use a Rust base image
-FROM rust:latest as builder
+FROM rust:latest AS builder
 
 # Create a new empty shell project
 WORKDIR /usr/src/app

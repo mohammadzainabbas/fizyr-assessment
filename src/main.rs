@@ -4,33 +4,54 @@ mod db;
 mod error;
 mod models;
 
-use cli::{App, AverageArgs, Commands, MeasurementsArgs}; // Import necessary items
+use cli::{App, AppState, AverageArgs, Commands, MeasurementsArgs}; // Added AppState
 use colored::*;
 use dialoguer::{theme::ColorfulTheme, Select};
 use error::Result;
-use tracing::{error, info};
-use tracing_subscriber::EnvFilter;
+use tracing::{error, info, Level};
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    // --- File Logging Setup ---
+    let file_appender = tracing_appender::rolling::daily("logs", "app.log");
+    let (non_blocking_appender, _guard) = tracing_appender::non_blocking(file_appender);
+
+    let log_level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    let env_filter =
+        EnvFilter::try_new(&log_level).unwrap_or_else(|_| EnvFilter::new(Level::INFO.to_string()));
+
+    // Layer for file logging (INFO and above)
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking_appender)
+        .with_ansi(false);
+
+    // Layer for console output (disabled for normal operation, only shows panics)
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(true)
+        .with_filter(EnvFilter::new(Level::OFF.to_string())); // Set level to OFF
+
+    // Combine layers and initialize
+    tracing_subscriber::registry()
+        .with(env_filter) // Global filter (applies to file layer)
+        .with(file_layer)
+        .with(console_layer) // Console layer filtered to OFF
         .init();
+    // --- End File Logging Setup ---
 
-    info!("Initializing air quality analysis app...");
+    info!("Initializing air quality analysis app..."); // This will go to the file
 
-    // Initialize the application state (DB connection, API client)
     let app = match App::new().await {
         Ok(app) => {
             info!("Application initialized successfully.");
             app
         },
         Err(e) => {
-            error!("Failed to initialize application: {:?}", e);
+            error!("Failed to initialize application: {:?}", e); // Goes to file and console (if WARN/ERROR)
             println!(
                 "{}",
-                "Error: Failed to initialize application. Check logs.".red()
+                "Error: Failed to initialize application. Check logs.".red() // User-facing error
             );
             return Err(e);
         },
@@ -43,90 +64,114 @@ async fn main() -> Result<()> {
 
     // Main interactive loop
     loop {
-        let options = &[
-            "Initialize Database Schema",
-            "Import Recent Air Quality Data",
-            "Find Most Polluted Country",
-            "Calculate Average Air Quality for a Country",
-            "Get All Measurements for a Country",
-            "Exit",
-        ];
+        // Get current state
+        let current_state = app.get_state().await;
+        info!("Current state for menu: {:?}", current_state); // Goes to file
+
+        // Build options dynamically based on state
+        let mut options = Vec::new();
+        match current_state {
+            AppState::Uninitialized => {
+                options.push("Initialize Database Schema");
+            },
+            AppState::DbInitialized => {
+                options.push("Re-initialize Database Schema");
+                options.push("Import Data");
+            },
+            AppState::DataImported => {
+                options.push("Re-initialize Database Schema");
+                options.push("Re-import Data");
+                options.push("Find Most Polluted Country");
+                options.push("Calculate Average Air Quality");
+                options.push("Get Measurements by City");
+            },
+        }
+        options.push("Exit");
 
         let selection = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("What would you like to do?")
-            .items(options)
+            .items(&options)
             .default(0)
-            .interact_opt()? // Use interact_opt to handle potential cancellation (e.g., Ctrl+C)
-            .unwrap_or(options.len() - 1); // Default to Exit if cancelled
+            .interact_opt()?
+            .unwrap_or(options.len() - 1);
 
-        // Clear the screen or add spacing for better readability (optional)
-        // print!("\x1B[2J\x1B[1;1H"); // Clears screen - might be too aggressive
-        println!("\n---\n"); // Add spacing
+        println!("\n---\n");
 
-        // Handle the user's choice
-        let command_result = match selection {
-            0 => app.run_command(Commands::InitDb).await,
-            1 => {
-                // Prompt for days
-                match cli::prompt_days() {
-                    Ok(days) => app.run_command(Commands::Import { days }).await,
+        // Map selection back to command based on current state
+        let command_to_run = match current_state {
+            AppState::Uninitialized => match selection {
+                0 => Some(Commands::InitDb),
+                1 => None, // Exit
+                _ => unreachable!(),
+            },
+            AppState::DbInitialized => match selection {
+                0 => Some(Commands::InitDb), // Re-initialize
+                1 => match cli::prompt_days() {
+                    Ok(days) => Some(Commands::Import { days }),
                     Err(e) => {
                         println!("{} {}", "Failed to get input:".red(), e);
-                        continue; // Skip command execution, go to next loop iteration
+                        None
                     },
-                }
+                },
+                2 => None, // Exit
+                _ => unreachable!(),
             },
-            2 => app.run_command(Commands::MostPolluted).await,
-            3 => {
-                // Prompt for country and days
-                let country = match cli::prompt_country() {
-                    Ok(c) => c,
+            AppState::DataImported => match selection {
+                0 => Some(Commands::InitDb), // Re-initialize
+                1 => match cli::prompt_days() {
+                    Ok(days) => Some(Commands::Import { days }),
+                    Err(e) => {
+                        println!("{} {}", "Failed to get input:".red(), e);
+                        None
+                    },
+                },
+                2 => Some(Commands::MostPolluted),
+                3 => {
+                    let country = match cli::prompt_country() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            println!("{} {}", "Failed to get country:".red(), e);
+                            continue;
+                        },
+                    };
+                    let days = match cli::prompt_days() {
+                        Ok(d) => d,
+                        Err(e) => {
+                            println!("{} {}", "Failed to get days:".red(), e);
+                            continue;
+                        },
+                    };
+                    Some(Commands::Average(AverageArgs { country, days }))
+                },
+                4 => match cli::prompt_country() {
+                    Ok(country) => Some(Commands::Measurements(MeasurementsArgs { country })),
                     Err(e) => {
                         println!("{} {}", "Failed to get country:".red(), e);
-                        continue;
+                        None
                     },
-                };
-                let days = match cli::prompt_days() {
-                    Ok(d) => d,
-                    Err(e) => {
-                        println!("{} {}", "Failed to get days:".red(), e);
-                        continue;
-                    },
-                };
-                app.run_command(Commands::Average(AverageArgs { country, days }))
-                    .await
+                },
+                5 => None, // Exit
+                _ => unreachable!(),
             },
-            4 => {
-                // Prompt for country
-                match cli::prompt_country() {
-                    Ok(country) => {
-                        app.run_command(Commands::Measurements(MeasurementsArgs { country }))
-                            .await
-                    },
-                    Err(e) => {
-                        println!("{} {}", "Failed to get country:".red(), e);
-                        continue;
-                    },
-                }
-            },
-            5 => {
-                println!("{}", "Exiting application. Goodbye!".green());
-                break; // Exit the loop
-            },
-            _ => unreachable!(), // Should not happen with the current setup
         };
 
-        // Handle potential errors from command execution
-        if let Err(e) = command_result {
-            error!("Command execution failed: {:?}", e);
-            println!(
-                "{} {}",
-                "Error executing command:".red(),
-                e.to_string().red()
-            );
+        // Execute the command if one was determined
+        if let Some(command) = command_to_run {
+            let command_result = app.run_command(command).await;
+            if let Err(e) = command_result {
+                error!("Command execution failed: {:?}", e); // Goes to file and console
+                println!(
+                    "{} {}",
+                    "Error executing command:".red(), // User-facing error
+                    e.to_string().red()
+                );
+            }
+        } else if selection == options.len() - 1 {
+            println!("{}", "Exiting application. Goodbye!".green());
+            break;
         }
 
-        println!("\n---\n"); // Add spacing before next prompt
+        println!("\n---\n");
     }
 
     Ok(())
