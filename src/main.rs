@@ -1,10 +1,16 @@
+//! Main entry point for the Air Quality Analysis CLI application.
+//!
+//! This module sets up logging, initializes the application state,
+//! and runs the main interactive command loop, handling user input
+//! and dispatching commands to the appropriate modules.
+
 mod api;
 mod cli;
 mod db;
 mod error;
 mod models;
 
-use cli::{App, AppState, AverageArgs, Commands, MeasurementsArgs}; // Added AppState
+use cli::{App, AppState, AverageArgs, Commands, MeasurementsArgs};
 use colored::*;
 use dialoguer::{theme::ColorfulTheme, Select};
 use error::Result;
@@ -40,7 +46,7 @@ async fn main() -> Result<()> {
         .init();
     // --- End File Logging Setup ---
 
-    info!("Initializing air quality analysis app..."); // This will go to the file
+    info!("Initializing air quality analysis app...");
 
     let app = match App::new().await {
         Ok(app) => {
@@ -66,7 +72,7 @@ async fn main() -> Result<()> {
     loop {
         // Get current state
         let current_state = app.get_state().await;
-        info!("Current state for menu: {:?}", current_state); // Goes to file
+        info!("Current state for menu: {:?}", current_state);
 
         // Build options dynamically based on state
         let mut options = Vec::new();

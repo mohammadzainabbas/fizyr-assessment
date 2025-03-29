@@ -4,10 +4,16 @@ A command-line tool for analyzing air quality data from the OpenAQ API. This pro
 
 ## Features
 
-- Fetch and store air quality data from the OpenAQ API
-- Find the most polluted country among a predefined list
-- Calculate 5-day average air quality for a specific country
-- Display all available measurements for a specific country
+- Interactive menu for easy operation.
+- Fetch and store air quality data from the OpenAQ API (v3) for predefined countries (NL, DE, FR, GR, ES, PK).
+- Initialize database schema.
+- Import data for a specified number of past days (uses mock data as fallback if API fails).
+- Find the most polluted country among the predefined list based on recent PM2.5 and PM10 data.
+- Calculate average air quality metrics for a specific country over a specified number of days.
+- Display the latest measurements for all parameters, grouped by city, for a specific country.
+- Logging to `logs/app.log`.
+- Multi-stage Docker build for efficient containerization.
+- GitHub Actions workflow for CI checks (check, fmt, clippy).
 
 ## Prerequisites
 
@@ -43,49 +49,36 @@ This will:
 
 ### Manual Setup
 
-1. Install dependencies:
-
-```bash
-cargo build
-```
-
-2. Initialize the database:
-
-```bash
-cargo run -- init-db
-```
-
-3. Import data:
-
-```bash
-cargo run -- import --days 5
-```
+1.  **Build the application:**
+    ```bash
+    cargo build
+    ```
+2.  **Run the interactive application:**
+    ```bash
+    cargo run
+    ```
 
 ## Usage
 
-### Find the Most Polluted Country
+Run the application using `cargo run`. You will be presented with an interactive menu:
 
-```bash
-cargo run -- most-polluted
+```
+Welcome to the Air Quality Analysis CLI!
+? What would you like to do? ›
+  Initialize Database Schema
+  Exit
 ```
 
-This will analyze the latest data and determine which country among Netherlands, Germany, France, Greece, Spain, and Pakistan has the highest pollution index.
+The available options will change based on the application's state (whether the database is initialized and data has been imported).
 
-### Calculate Average Air Quality
+**Available Actions:**
 
-```bash
-cargo run -- average --country NL --days 5
-```
-
-This will calculate the 5-day average air quality for the Netherlands. You can change the country code to one of: NL, DE, FR, GR, ES, or PK.
-
-### Get All Measurements for a Country
-
-```bash
-cargo run -- measurements --country DE
-```
-
-This will display all available measurements for Germany from the database.
+1.  **Initialize Database Schema:** Creates the necessary `measurements` table and indexes in the PostgreSQL database. If run again, it ensures the schema exists.
+2.  **Import Data:** Prompts for the number of past days to fetch data for. It fetches data for the predefined countries (NL, DE, FR, GR, ES, PK) from the OpenAQ API and stores it in the database. Uses mock data as a fallback if the API request fails.
+3.  **Find Most Polluted Country:** Analyzes recent data (last 2 days) for PM2.5 and PM10 across the predefined countries and displays the country with the highest calculated pollution index.
+4.  **Calculate Average Air Quality:** Prompts for a country code and the number of days. Calculates and displays the average values for various pollutants (PM2.5, PM10, O3, NO2, SO2, CO) for that country over the specified period.
+5.  **Get Measurements by City:** Prompts for a country code. Displays a table showing the latest measurement value for each pollutant, grouped by city, within that country.
+6.  **Exit:** Terminates the application.
 
 ## Development
 

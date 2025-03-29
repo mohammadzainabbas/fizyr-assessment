@@ -1,27 +1,37 @@
+//! Defines the core application logic, state management, command definitions,
+//! and execution handlers for the CLI.
+//!
+//! This module orchestrates the interaction between the API client, database,
+//! and user interface elements (prompts, tables, progress bars).
+
 use crate::api::{MockDataProvider, OpenAQClient};
 use crate::db::Database;
 use crate::error::{AppError, Result};
 use chrono::{Duration, Utc};
-// Removed clap imports
 use colored::*;
-use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table}; // Added Attribute, Color
+use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
-use std::sync::Arc; // For Arc<Mutex<AppState>>
+use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use tokio::sync::Mutex; // For App state
+use tokio::sync::Mutex;
 use tracing::{error, info};
 
-/// Represents the current state of the application initialization.
+/// Represents the different states the application can be in, primarily tracking
+/// database initialization and data import status. This influences the available
+/// commands in the interactive menu.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
+    /// Initial state before the database schema is created.
     Uninitialized,
+    /// State after the database schema has been initialized but no data imported yet.
     DbInitialized,
+    /// State after data has been successfully imported at least once.
     DataImported,
 }
 
-/// List of countries to consider for pollution analysis
+/// A predefined list of country codes used for data fetching and analysis.
 pub const COUNTRIES: [&str; 6] = [
     "NL", // Netherlands
     "DE", // Germany
@@ -31,53 +41,66 @@ pub const COUNTRIES: [&str; 6] = [
     "PK", // Pakistan
 ];
 
-// Commands enum (no clap attributes)
+/// Defines the available commands that the user can trigger through the interactive menu.
 #[derive(Debug, Clone)]
 pub enum Commands {
+    /// Initialize or re-initialize the database schema.
     InitDb,
+    /// Import data from the OpenAQ API for a specified number of past days.
     Import { days: i64 },
+    /// Find the most polluted country based on recent PM2.5 and PM10 data.
     MostPolluted,
+    /// Calculate the average air quality metrics for a specific country over a number of days.
     Average(AverageArgs),
+    /// Get the latest measurements for all parameters, grouped by city, for a specific country.
     Measurements(MeasurementsArgs),
 }
 
-// Args structs (no clap attributes)
+/// Arguments for the `Average` command.
 #[derive(Debug, Clone)]
 pub struct AverageArgs {
+    /// The 2-letter country code.
     pub country: String,
+    /// The number of past days to include in the average calculation.
     pub days: i64,
 }
 
+/// Arguments for the `Measurements` command.
 #[derive(Debug, Clone)]
 pub struct MeasurementsArgs {
+    /// The 2-letter country code.
     pub country: String,
 }
 
-/// CLI application
+/// The main application structure, holding database connections, API clients,
+/// and the current application state.
 pub struct App {
     db: Database,
     api_client: OpenAQClient,
-    mock_provider: MockDataProvider,
-    state: Arc<Mutex<AppState>>, // Add state field
+    mock_provider: MockDataProvider, // Used as fallback if API fails
+    state: Arc<Mutex<AppState>>,     // Shared, mutable state
 }
 
 impl App {
-    /// Create a new CLI application and determine initial state
+    /// Creates a new `App` instance.
+    ///
+    /// Initializes database connection, API client, loads environment variables,
+    /// and determines the initial `AppState` by checking the database.
     pub async fn new() -> Result<Self> {
-        dotenv::dotenv().ok();
+        dotenv::dotenv().ok(); // Load .env file if present
         let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
             "postgres://postgres:postgres@localhost:5432/air_quality".to_string()
         });
         let api_key = env::var("OPENAQ_KEY").map_err(|e| {
             error!("OPENAQ_KEY environment variable not set: {}", e);
-            AppError::Env(e) // Use renamed variant Env
+            AppError::Env(e)
         })?;
 
         let db = Database::new(&database_url).await?;
         let api_client = OpenAQClient::new(api_key);
         let mock_provider = MockDataProvider::new();
 
-        // Determine initial state
+        // Determine initial state by querying the database
         let initial_state = if db.has_data_imported().await? {
             AppState::DataImported
         } else if db.is_schema_initialized().await? {
@@ -91,21 +114,24 @@ impl App {
             db,
             api_client,
             mock_provider,
-            state: Arc::new(Mutex::new(initial_state)), // Initialize state
+            state: Arc::new(Mutex::new(initial_state)),
         })
     }
 
-    /// Get the current application state
+    /// Returns a clone of the current application state.
     pub async fn get_state(&self) -> AppState {
         self.state.lock().await.clone()
     }
 
-    /// Run a specific command chosen by the user, updating state on success
+    /// Executes the given command.
+    ///
+    /// Handles the core logic for each command, including user feedback (progress bars, tables),
+    /// interaction with the database and API client, and updating the application state
+    /// upon successful completion of state-changing commands (`InitDb`, `Import`).
     pub async fn run_command(&self, command: Commands) -> Result<()> {
-        // Clone state Arc for potential update later
-        let state_clone = Arc::clone(&self.state);
+        let state_clone = Arc::clone(&self.state); // Clone Arc for state updates
 
-        let result = match command {
+        match command {
             Commands::InitDb => {
                 println!("{}", "Initializing database schema...".yellow());
                 let pb = ProgressBar::new_spinner();
@@ -119,24 +145,23 @@ impl App {
                 pb.finish_with_message("Database schema initialized successfully!".to_string());
                 info!("Database schema initialized successfully");
 
-                // Update state if successful
+                // Update state only if it was previously Uninitialized
                 let mut state = state_clone.lock().await;
                 if *state == AppState::Uninitialized {
                     *state = AppState::DbInitialized;
                     info!("App state updated to: {:?}", *state);
                 } else {
-                    // If already initialized or data imported, just confirm re-initialization
-                    info!("Database re-initialized.");
+                    // If already DbInitialized or DataImported, state remains the same after re-init
+                    info!("Database re-initialized (state remains {:?}).", *state);
                 }
-                Ok(()) // Return Ok explicitly inside the match arm
+                Ok(())
             },
             Commands::Import { days } => {
-                // Prompt for days is now in main.rs
                 self.import_data(days).await?;
 
-                // Update state if successful
+                // Update state to DataImported after successful import
                 let mut state = state_clone.lock().await;
-                *state = AppState::DataImported; // Always update to DataImported after import
+                *state = AppState::DataImported;
                 info!("App state updated to: {:?}", *state);
                 Ok(())
             },
@@ -149,16 +174,14 @@ impl App {
                 Ok(())
             },
             Commands::Measurements(args) => {
-                // Prompt for country is now in main.rs
-                self.get_measurements_table(&args.country).await?; // Renamed internal call
+                self.get_measurements_table(&args.country).await?;
                 Ok(())
             },
-        }; // End of match
-
-        result // Return the result from the match
+        }
     }
 
-    /// Import air quality data into the database
+    /// Fetches data from the OpenAQ API (or mock provider on failure) for the specified
+    /// number of days for all `COUNTRIES` and inserts it into the database.
     async fn import_data(&self, days: i64) -> Result<()> {
         println!(
             "{} {}",
@@ -230,7 +253,8 @@ impl App {
         Ok(())
     }
 
-    /// Find the most polluted country and display as table
+    /// Queries the database for the most polluted country based on a weighted index
+    /// of recent PM2.5 and PM10 values and displays the result in a table.
     async fn find_most_polluted(&self) -> Result<()> {
         println!("{}", "Finding the most polluted country...".yellow());
         let pb = ProgressBar::new_spinner();
@@ -284,9 +308,11 @@ impl App {
         Ok(())
     }
 
-    /// Calculate average air quality for a country and display as table
+    /// Calculates the average value for each pollutant over the specified number of days
+    /// for the given country and displays the results in a table.
     async fn calculate_average(&self, country: &str, days: i64) -> Result<()> {
         let country_code = country.to_uppercase();
+        // Validate country code against the predefined list
         if !COUNTRIES.contains(&country_code.as_str()) {
             return Err(AppError::Cli(format!(
                 "Invalid country code. Must be one of: {:?}",
@@ -352,10 +378,11 @@ impl App {
         Ok(())
     }
 
-    /// Get latest measurements by city for a country and display as a table
+    /// Fetches the latest measurement for each parameter, grouped by city, for the specified
+    /// country and displays the results in a table.
     async fn get_measurements_table(&self, country: &str) -> Result<()> {
-        // Renamed function
         let country_code = country.to_uppercase();
+        // Validate country code
         if !COUNTRIES.contains(&country_code.as_str()) {
             return Err(AppError::Cli(format!(
                 "Invalid country code. Must be one of: {:?}",
@@ -420,9 +447,11 @@ impl App {
         println!("{table}");
         Ok(())
     }
-} // End of impl App
+}
 
-// --- Helper function to prompt for country ---
+// --- User Interaction Helpers ---
+
+/// Prompts the user to select a country from the predefined `COUNTRIES` list.
 pub fn prompt_country() -> Result<String> {
     let selection = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Select a country")
@@ -432,11 +461,13 @@ pub fn prompt_country() -> Result<String> {
     Ok(COUNTRIES[selection].to_string())
 }
 
-// --- Helper function to prompt for days ---
+/// Prompts the user to enter the number of days for historical data retrieval.
+///
+/// Validates that the input is a positive integer up to 365.
 pub fn prompt_days() -> Result<i64> {
     let days: i64 = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Enter number of days for history (e.g., 5)")
-        .default(5)
+        .default(5) // Default to 5 days
         .validate_with(|input: &i64| -> std::result::Result<(), &str> {
             if *input > 0 && *input <= 365 {
                 Ok(())
@@ -452,16 +483,14 @@ pub fn prompt_days() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::Result;
-    use crate::models::{
-        CityLatestMeasurements, CountryAirQuality, DbMeasurement, Measurement, PollutionRanking,
-    };
+    // Note: No need to import Result from crate::error as it's shadowed by std::result::Result here.
+    // Use crate::error::Result explicitly if needed.
+    use crate::models::{CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking};
     use chrono::{Duration, Utc};
-    use num_traits::FromPrimitive;
-    use sqlx::types::Decimal;
+    // Removed unused Decimal, DbMeasurement, FromPrimitive imports from test scope
     use std::sync::{Arc, Mutex};
 
-    // --- Mock Database State ---
+    // --- Mock Database State (for tracking calls) ---
     #[derive(Clone, Default)]
     struct MockDbState {
         init_schema_called: bool,
@@ -471,10 +500,10 @@ mod tests {
         get_latest_by_city_called: bool,
         most_polluted_result: Option<Result<PollutionRanking>>,
         average_result: Option<Result<CountryAirQuality>>,
-        latest_by_city_result: Option<Result<Vec<CityLatestMeasurements>>>,
+        latest_by_city_result: Option<crate::error::Result<Vec<CityLatestMeasurements>>>,
     }
 
-    // --- Mock Database ---
+    // --- Mock Database (implements necessary methods for testing App logic) ---
     #[derive(Clone)]
     struct MockDatabase {
         state: Arc<Mutex<MockDbState>>,
@@ -486,24 +515,36 @@ mod tests {
                 state: Arc::new(Mutex::new(MockDbState::default())),
             }
         }
-        fn expect_get_most_polluted(&self, result: Result<PollutionRanking>) {
+        // Methods to set expectations for query results
+        fn expect_get_most_polluted(&self, result: crate::error::Result<PollutionRanking>) {
             self.state.lock().unwrap().most_polluted_result = Some(result);
         }
-        fn expect_get_average(&self, result: Result<CountryAirQuality>) {
+        fn expect_get_average(&self, result: crate::error::Result<CountryAirQuality>) {
             self.state.lock().unwrap().average_result = Some(result);
         }
-        fn expect_get_latest_by_city(&self, result: Result<Vec<CityLatestMeasurements>>) {
+        fn expect_get_latest_by_city(
+            &self,
+            result: crate::error::Result<Vec<CityLatestMeasurements>>,
+        ) {
             self.state.lock().unwrap().latest_by_city_result = Some(result);
         }
-        async fn init_schema(&self) -> Result<()> {
+
+        // Mock implementations of Database methods used by App
+        async fn init_schema(&self) -> crate::error::Result<()> {
             self.state.lock().unwrap().init_schema_called = true;
             Ok(())
         }
-        async fn insert_measurements(&self, _measurements: &[Measurement]) -> Result<()> {
+        async fn insert_measurements(
+            &self,
+            _measurements: &[Measurement],
+        ) -> crate::error::Result<()> {
             self.state.lock().unwrap().insert_measurements_called = true;
             Ok(())
         }
-        async fn get_most_polluted_country(&self, _countries: &[&str]) -> Result<PollutionRanking> {
+        async fn get_most_polluted_country(
+            &self,
+            _countries: &[&str],
+        ) -> crate::error::Result<PollutionRanking> {
             let mut state = self.state.lock().unwrap();
             state.get_most_polluted_called = true;
             state.most_polluted_result.take().unwrap_or_else(|| {
@@ -514,7 +555,7 @@ mod tests {
             &self,
             _country: &str,
             _days: i64,
-        ) -> Result<CountryAirQuality> {
+        ) -> crate::error::Result<CountryAirQuality> {
             let mut state = self.state.lock().unwrap();
             state.get_average_called = true;
             state.average_result.take().unwrap_or_else(|| {
@@ -524,23 +565,23 @@ mod tests {
         async fn get_latest_measurements_by_city(
             &self,
             _country: &str,
-        ) -> Result<Vec<CityLatestMeasurements>> {
+        ) -> crate::error::Result<Vec<CityLatestMeasurements>> {
             let mut state = self.state.lock().unwrap();
             state.get_latest_by_city_called = true;
             state.latest_by_city_result.take().unwrap_or_else(|| {
                 panic!("MockDatabase::get_latest_measurements_by_city called without expectation")
             })
         }
-        // Added mock checks for state detection
-        async fn is_schema_initialized(&self) -> Result<bool> {
+        // Mock implementations for state detection methods used in App::new
+        async fn is_schema_initialized(&self) -> crate::error::Result<bool> {
             Ok(self.state.lock().unwrap().init_schema_called)
         }
-        async fn has_data_imported(&self) -> Result<bool> {
+        async fn has_data_imported(&self) -> crate::error::Result<bool> {
             Ok(self.state.lock().unwrap().insert_measurements_called)
         }
     }
 
-    // --- Test Application ---
+    // --- Test Harness (simplified version of App for testing command logic) ---
     struct TestApp {
         db: MockDatabase,
         mock_provider: MockDataProvider,
@@ -553,24 +594,27 @@ mod tests {
                 mock_provider: MockDataProvider::new(),
             }
         }
-        async fn run_command(&self, command: Commands) -> Result<()> {
+        // Simplified command runner that calls mock methods
+        async fn run_command(&self, command: Commands) -> crate::error::Result<()> {
             match command {
                 Commands::InitDb => self.run_init_db().await,
                 Commands::Import { days } => self.run_import(days).await,
                 Commands::MostPolluted => self.run_most_polluted().await,
                 Commands::Average(args) => self.run_average(&args.country, args.days).await,
-                Commands::Measurements(args) => self.run_measurements_table(&args.country).await, // Renamed call
+                Commands::Measurements(args) => self.run_measurements_table(&args.country).await,
             }
         }
-        async fn run_init_db(&self) -> Result<()> {
+        // Simplified internal methods calling the mock DB
+        async fn run_init_db(&self) -> crate::error::Result<()> {
             self.db.init_schema().await?;
             Ok(())
         }
-        async fn run_import(&self, days: i64) -> Result<()> {
-            self.db.init_schema().await?;
+        async fn run_import(&self, days: i64) -> crate::error::Result<()> {
+            self.db.init_schema().await?; // Import implicitly initializes schema if needed
             let end_date = Utc::now();
             let start_date = end_date - Duration::days(days);
             for country in COUNTRIES.iter() {
+                // In tests, we assume mock provider succeeds
                 let mock_measurements = self
                     .mock_provider
                     .get_measurements_for_country_in_date_range(country, start_date, end_date)?;
@@ -578,21 +622,22 @@ mod tests {
             }
             Ok(())
         }
-        async fn run_most_polluted(&self) -> Result<()> {
+        async fn run_most_polluted(&self) -> crate::error::Result<()> {
             let country_refs: Vec<&str> = COUNTRIES.iter().copied().collect();
             let _result = self.db.get_most_polluted_country(&country_refs).await?;
+            // In real app, this result would be formatted and printed
             Ok(())
         }
-        async fn run_average(&self, country: &str, days: i64) -> Result<()> {
+        async fn run_average(&self, country: &str, days: i64) -> crate::error::Result<()> {
             let country_code = country.to_uppercase();
             if !COUNTRIES.contains(&country_code.as_str()) {
                 return Err(AppError::Cli(format!("Invalid country code: {}", country)));
             }
             let _result = self.db.get_average_air_quality(&country_code, days).await?;
+            // In real app, this result would be formatted and printed
             Ok(())
         }
-        // Renamed test function
-        async fn run_measurements_table(&self, country: &str) -> Result<()> {
+        async fn run_measurements_table(&self, country: &str) -> crate::error::Result<()> {
             let country_code = country.to_uppercase();
             if !COUNTRIES.contains(&country_code.as_str()) {
                 return Err(AppError::Cli(format!("Invalid country code: {}", country)));
@@ -601,47 +646,39 @@ mod tests {
                 .db
                 .get_latest_measurements_by_city(&country_code)
                 .await?;
+            // In real app, this result would be formatted and printed
             Ok(())
         }
     }
 
-    // --- Tests ---
+    // --- Unit Tests for Command Logic ---
     #[tokio::test]
     async fn test_cmd_init_db() {
         let app = TestApp::new();
         let command = Commands::InitDb;
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().init_schema_called);
+        assert!(app.db.state.lock().unwrap().init_schema_called); // Verify mock method was called
     }
 
     #[tokio::test]
     async fn test_cmd_import() {
         let app = TestApp::new();
         let command = Commands::Import { days: 3 };
-        app.db
-            .expect_get_most_polluted(Ok(PollutionRanking::new("PK"))); // Need expectation for init check
-        app.db.expect_get_average(Ok(CountryAirQuality {
-            country: "NL".to_string(),
-            avg_pm25: None,
-            avg_pm10: None,
-            avg_o3: None,
-            avg_no2: None,
-            avg_so2: None,
-            avg_co: None,
-            measurement_count: 0,
-        })); // Need expectation for init check
-        app.db.expect_get_latest_by_city(Ok(vec![])); // Need expectation for init check
+        // No specific expectations needed for DB queries during import test,
+        // as we primarily check if insert_measurements was called.
+        // The mock provider handles data generation.
 
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().init_schema_called);
-        assert!(app.db.state.lock().unwrap().insert_measurements_called);
+        assert!(app.db.state.lock().unwrap().init_schema_called); // Import calls init_schema
+        assert!(app.db.state.lock().unwrap().insert_measurements_called); // Verify mock method was called
     }
 
     #[tokio::test]
     async fn test_cmd_most_polluted() {
         let app = TestApp::new();
+        // Set expectation for the mock DB call
         let expected_ranking = PollutionRanking {
             country: "PK".to_string(),
             pollution_index: 150.0,
@@ -649,15 +686,17 @@ mod tests {
             pm10_avg: Some(100.0),
         };
         app.db.expect_get_most_polluted(Ok(expected_ranking));
+
         let command = Commands::MostPolluted;
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().get_most_polluted_called);
+        assert!(app.db.state.lock().unwrap().get_most_polluted_called); // Verify mock method was called
     }
 
     #[tokio::test]
     async fn test_cmd_average_valid_country() {
         let app = TestApp::new();
+        // Set expectation for the mock DB call
         let expected_average = CountryAirQuality {
             country: "NL".to_string(),
             avg_pm25: Some(15.0),
@@ -669,57 +708,64 @@ mod tests {
             measurement_count: 10,
         };
         app.db.expect_get_average(Ok(expected_average));
+
         let command = Commands::Average(AverageArgs {
             country: "NL".to_string(),
             days: 5,
         });
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().get_average_called);
+        assert!(app.db.state.lock().unwrap().get_average_called); // Verify mock method was called
     }
 
     #[tokio::test]
     async fn test_cmd_average_invalid_country() {
         let app = TestApp::new();
+        // No DB expectation needed as it should fail validation first
         let command = Commands::Average(AverageArgs {
-            country: "XX".to_string(),
+            country: "XX".to_string(), // Invalid country code
             days: 5,
         });
         let result = app.run_command(command).await;
         assert!(result.is_err());
+        // Check that the error is the expected CLI validation error
         match result.err().unwrap() {
             AppError::Cli(msg) => assert!(msg.contains("Invalid country code")),
-            _ => panic!("Expected CliError"),
+            e => panic!("Expected CliError, got {:?}", e),
         }
+        // Ensure the DB method was *not* called
         assert!(!app.db.state.lock().unwrap().get_average_called);
     }
 
     #[tokio::test]
     async fn test_cmd_measurements_valid_country() {
         let app = TestApp::new();
+        // Set expectation for the mock DB call (empty vec is a valid result)
         let expected_city_measurements = vec![];
         app.db
             .expect_get_latest_by_city(Ok(expected_city_measurements));
+
         let command = Commands::Measurements(MeasurementsArgs {
             country: "DE".to_string(),
         });
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().get_latest_by_city_called);
+        assert!(app.db.state.lock().unwrap().get_latest_by_city_called); // Verify mock method was called
     }
 
     #[tokio::test]
     async fn test_cmd_measurements_invalid_country() {
         let app = TestApp::new();
+        // No DB expectation needed
         let command = Commands::Measurements(MeasurementsArgs {
-            country: "YY".to_string(),
+            country: "YY".to_string(), // Invalid country code
         });
         let result = app.run_command(command).await;
         assert!(result.is_err());
         match result.err().unwrap() {
             AppError::Cli(msg) => assert!(msg.contains("Invalid country code")),
-            _ => panic!("Expected CliError"),
+            e => panic!("Expected CliError, got {:?}", e),
         }
-        assert!(!app.db.state.lock().unwrap().get_latest_by_city_called);
+        assert!(!app.db.state.lock().unwrap().get_latest_by_city_called); // Ensure DB method was not called
     }
 }

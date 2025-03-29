@@ -11,6 +11,7 @@ keywords = ["rust", "fizyr-assessment", "air-quality-cli", "cli"]
 categories = ["command-line-utilities"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+
 [dependencies]
 # CLI
 clap = { version = "4.5.3", features = ["derive"] }
@@ -63,3 +64,9 @@ serial_test = "2.0.0"
 sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "decimal"] } # Added "decimal" feature
 # num-traits moved to main dependencies
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
+
+[profile.release]
+lto = "thin"           # Enable ThinLTO for better optimization balance
+codegen-units = 1      # Maximize optimization opportunities, standard for release
+panic = "abort"        # Abort on panic for smaller binary and potentially faster code
+strip = true           # Strip symbols from the binary

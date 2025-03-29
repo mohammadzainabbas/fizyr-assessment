@@ -1,18 +1,16 @@
+//! Provides database interaction functionalities using `sqlx` with a PostgreSQL backend.
+//! Includes schema initialization, data insertion, and various querying capabilities
+//! for air quality measurements.
+
 use crate::error::{AppError, Result};
 use crate::models::{
-    CityLatestMeasurements, // Add new struct
-    CountryAirQuality,
-    DbMeasurement, // Keep DbMeasurement for the test helper
-    Measurement,
-    PollutionRanking,
+    CityLatestMeasurements, CountryAirQuality, DbMeasurement, Measurement, PollutionRanking,
 };
-// Removed unused DateTime, Utc
 use rayon::prelude::*;
-// Removed unused Decimal
-use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row}; // Added Row
+use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 use tracing::{debug, error, info};
 
-/// Database operations
+/// Represents the database connection pool and provides methods for database operations.
 pub struct Database {
     pool: Pool<Postgres>,
 }
@@ -28,7 +26,7 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to connect to database: {}", e);
-                AppError::Db(e.into()) // Use renamed variant Db
+                AppError::Db(e.into())
             })?;
 
         info!("Connected to database successfully");
@@ -64,10 +62,10 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create measurements table: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
-        // Create country index
+        // Index for efficient country-based filtering
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_measurements_country ON measurements(country)"#,
         )
@@ -75,10 +73,10 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create country index: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
-        // Create parameter index
+        // Index for efficient parameter-based filtering
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_measurements_parameter ON measurements(parameter)"#,
         )
@@ -86,10 +84,10 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create parameter index: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
-        // Create date index
+        // Index for efficient time-based filtering
         sqlx::query(
             r#"CREATE INDEX IF NOT EXISTS idx_measurements_date_utc ON measurements(date_utc)"#,
         )
@@ -97,7 +95,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to create date index: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
         info!("Database schema initialized successfully");
@@ -123,10 +121,10 @@ impl Database {
             .map(|m| DbMeasurement::from(m.clone()))
             .collect();
 
-        // Use a transaction for better performance
+        // Use a transaction for atomic and potentially faster batch inserts
         let mut tx = self.pool.begin().await.map_err(|e| {
             error!("Failed to begin transaction: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
         for m in &db_measurements {
@@ -135,13 +133,13 @@ impl Database {
                 INSERT INTO measurements 
                 (location_id, location, parameter, value, unit, date_utc, date_local, country, city, latitude, longitude)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT DO NOTHING
+                ON CONFLICT DO NOTHING -- Avoid errors if the exact measurement already exists (though unlikely with timestamps)
                 "#,
             )
             .bind(m.location_id)
             .bind(&m.location)
             .bind(&m.parameter)
-            .bind(m.value) // Removed borrow &
+            .bind(m.value)
             .bind(&m.unit)
             .bind(m.date_utc)
             .bind(&m.date_local)
@@ -153,13 +151,13 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to insert measurement: {}", e);
-                AppError::Db(e.into()) // Use renamed variant Db
+                AppError::Db(e.into())
             })?;
         }
 
         tx.commit().await.map_err(|e| {
             error!("Failed to commit transaction: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
         info!("Successfully inserted {} measurements", measurements.len());
@@ -206,7 +204,7 @@ impl Database {
             .await
             .map_err(|e| {
                 error!("Failed to query most polluted country: {}", e);
-                AppError::Db(e.into()) // Use renamed variant Db
+                AppError::Db(e.into())
             })?;
 
         match result {
@@ -283,7 +281,7 @@ impl Database {
         .await
         .map_err(|e| {
             error!("Failed to query average air quality: {}", e);
-            AppError::Db(e.into()) // Use renamed variant Db
+            AppError::Db(e.into())
         })?;
 
         match result {
@@ -330,9 +328,11 @@ impl Database {
         }
     }
 
-    // Removed unused function get_measurements_for_country
-
-    /// Get the latest measurement for each parameter grouped by city for a specific country
+    /// Get the latest measurement for each parameter, grouped by city, for a specific country.
+    ///
+    /// This function retrieves the most recent value recorded for each pollutant (pm25, pm10, etc.)
+    /// within each city of the specified country. It also includes the timestamp of the
+    /// latest update among any of these parameters for that city.
     pub async fn get_latest_measurements_by_city(
         &self,
         country: &str,
@@ -416,10 +416,10 @@ mod tests {
     use super::*;
     use crate::models::{Dates, Measurement};
     use chrono::{Duration, Utc};
-    use num_traits::FromPrimitive;
-    use sqlx::{types::Decimal, PgPool, Row}; // Keep Decimal here // Keep FromPrimitive for test assertion
+    use num_traits::FromPrimitive; // Required for Decimal::from_f64
+    use sqlx::{types::Decimal, PgPool, Row};
 
-    // Helper function to create a test measurement
+    /// Helper function to create a Measurement instance for testing.
     fn create_test_measurement(
         country: &str,
         parameter: &str,
@@ -427,29 +427,28 @@ mod tests {
         days_ago: i64,
     ) -> Measurement {
         Measurement {
-            location_id: 123, // Use a fixed ID for simplicity in tests
+            location_id: 123, // Use a fixed ID for simplicity
             location: format!("Test Location {}", country),
             parameter: parameter.to_string(),
             value,
             unit: "µg/m³".to_string(),
             date: Dates {
-                // Correct struct name
                 utc: Utc::now() - Duration::days(days_ago),
                 local: format!(
-                    "{}",
-                    (Utc::now() - Duration::days(days_ago)).format("%Y-%m-%dT%H:%M:%S%z")
+                    "{}", // Format as ISO 8601 string
+                    (Utc::now() - Duration::days(days_ago)).format("%Y-%m-%dT%H:%M:%S%z") // Example: 2023-10-27T10:00:00+00:00
                 ),
             },
             country: country.to_string(),
             city: Some(format!("Test City {}", country)),
-            coordinates: None, // Keep as None for simplicity
+            coordinates: None, // Coordinates not essential for these tests
         }
     }
 
-    // Helper to insert test data
+    /// Helper function to set up the database schema and insert standard test data.
     async fn insert_test_data(pool: &PgPool) -> Result<()> {
         let db = Database { pool: pool.clone() };
-        db.init_schema().await?; // Ensure schema exists
+        db.init_schema().await?; // Ensure schema exists before inserting
 
         let measurements = vec![
             // Netherlands data (recent)
@@ -485,9 +484,9 @@ mod tests {
         )
         .fetch_one(&db.pool)
         .await?;
-        assert!(row.get::<bool, _>(0)); // Now Row trait is in scope
+        assert!(row.get::<bool, _>(0));
 
-        // Check if indexes exist (optional, but good practice)
+        // Check if indexes were created
         let indexes = [
             "idx_measurements_country",
             "idx_measurements_parameter",
@@ -498,7 +497,7 @@ mod tests {
                 .bind(index_name)
                 .fetch_one(&db.pool)
                 .await?;
-            assert!(row.get::<bool, _>(0)); // Now Row trait is in scope
+            assert!(row.get::<bool, _>(0), "Index {} should exist", index_name);
         }
 
         Ok(())
@@ -528,8 +527,7 @@ mod tests {
                 .await?;
         assert_eq!(row.country, "NL");
         assert_eq!(row.parameter, "pm25");
-        // Compare Decimal with Decimal::from_f64
-        assert_eq!(row.value, Decimal::from_f64(10.0).unwrap()); // Use Decimal::from_f64
+        assert_eq!(row.value, Decimal::from_f64(10.0).unwrap());
 
         Ok(())
     }
@@ -543,14 +541,15 @@ mod tests {
         let result = db.get_most_polluted_country(&countries).await?;
 
         // Pakistan should be most polluted based on test data (pm25*1.5 + pm10)
+        // Expected calculation based on test data (pm25*1.5 + pm10):
         // PK: (50 * 1.5) + 80 = 75 + 80 = 155
         // DE: (18 * 1.5) + 28 = 27 + 28 = 55
         // NL: (15 * 1.5) + 25 = 22.5 + 25 = 47.5
         // ES: (12 * 1.5) + 0 = 18
         // GR: 0 + 22 = 22
-        // FR: No recent data
+        // FR: No recent data included in calculation
         assert_eq!(result.country, "PK");
-        assert!((result.pollution_index - 155.0).abs() < 1e-6); // Compare floats
+        assert!((result.pollution_index - 155.0).abs() < 1e-6); // Use tolerance for float comparison
         assert!(result.pm25_avg.is_some());
         assert!((result.pm25_avg.unwrap() - 50.0).abs() < 1e-6);
         assert!(result.pm10_avg.is_some());
@@ -574,15 +573,15 @@ mod tests {
         assert!((result_nl.avg_pm10.unwrap() - 25.0).abs() < 1e-6);
         assert!(result_nl.avg_no2.is_some());
         assert!((result_nl.avg_no2.unwrap() - 30.0).abs() < 1e-6);
-        assert!(result_nl.avg_o3.is_none()); // No O3 data inserted for NL
+        assert!(result_nl.avg_o3.is_none()); // No O3 data was inserted for NL
 
-        // Test for FR (only old data, should return 0 measurements)
+        // Test for FR (only old data exists, should return 0 measurements within the 5-day window)
         let result_fr = db.get_average_air_quality("FR", 5).await?;
         assert_eq!(result_fr.country, "FR");
-        assert_eq!(result_fr.measurement_count, 0);
+        assert_eq!(result_fr.measurement_count, 0); // No recent measurements
         assert!(result_fr.avg_pm25.is_none());
 
-        // Test for non-existent country
+        // Test for a country with no data at all
         let result_xx = db.get_average_air_quality("XX", 5).await?;
         assert_eq!(result_xx.country, "XX");
         assert_eq!(result_xx.measurement_count, 0);
@@ -590,5 +589,5 @@ mod tests {
         Ok(())
     }
 
-    // Removed unused test test_get_measurements_for_country
+    // TODO: Add test for get_latest_measurements_by_city
 }
