@@ -18,9 +18,7 @@ pub enum AppError {
     #[error("CLI Error: {0}")]
     Cli(String), // Renamed
 
-    #[error("Configuration Error: {0}")]
-    Config(String), // Renamed
-
+    // Removed unused Config variant
     #[error("Dialoguer Error: {0}")]
     Dialoguer(Arc<dialoguer::Error>), // Renamed
 

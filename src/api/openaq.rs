@@ -1,8 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::models::{Measurement, OpenAQMeasurementResponse};
 use chrono::{DateTime, Utc};
-use reqwest::{Client, StatusCode}; // Added StatusCode
-                                   // Removed unused Arc import
+use reqwest::Client; // Removed StatusCode
 use tracing::{debug, error, info};
 
 const BASE_URL: &str = "https://api.openaq.org/v3";

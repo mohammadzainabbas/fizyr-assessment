@@ -2,14 +2,13 @@ use crate::error::{AppError, Result};
 use crate::models::{
     CityLatestMeasurements, // Add new struct
     CountryAirQuality,
-    DbMeasurement,
+    DbMeasurement, // Keep DbMeasurement for the test helper
     Measurement,
     PollutionRanking,
 };
-use chrono::{DateTime, Utc};
+// Removed unused DateTime, Utc
 use rayon::prelude::*;
-use sqlx::types::Decimal; // Import Decimal
-// Removed unused Decimal import
+// Removed unused Decimal
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tracing::{debug, error, info};
 
@@ -331,84 +330,7 @@ impl Database {
         }
     }
 
-    /// Get all measurements for a specific country
-    pub async fn get_measurements_for_country(&self, country: &str) -> Result<Vec<DbMeasurement>> {
-        info!("Fetching all measurements for {}", country);
-
-        let measurements = sqlx::query_as::<
-            _,
-            (
-                i32,
-                i64,
-                String,
-                String,
-                sqlx::types::Decimal, // Use full path here
-                String,
-                DateTime<Utc>,
-                String,
-                String,
-                Option<String>,
-                Option<f64>,
-                Option<f64>,
-            ),
-        >(
-            r#"
-            SELECT 
-                id, location_id, location, parameter, value, unit, -- Removed ::DOUBLE PRECISION cast
-                date_utc, date_local, country, city, latitude, longitude
-            FROM measurements
-            WHERE country = $1
-            ORDER BY date_utc DESC
-            LIMIT 1000
-            "#,
-        )
-        .bind(country)
-        .fetch_all(&self.pool)
-        .await
-            .map_err(|e| {
-                error!("Failed to fetch measurements for {}: {}", country, e);
-                AppError::Db(e.into()) // Use renamed variant Db
-            })?;
-
-        let result: Vec<DbMeasurement> = measurements
-            .into_iter()
-            .map(
-                |(
-                    id,
-                    location_id,
-                    location,
-                    parameter,
-                    value,
-                    unit,
-                    date_utc,
-                    date_local,
-                    country,
-                    city,
-                    latitude,
-                    longitude,
-                )| {
-                    DbMeasurement {
-                        id: Some(id),
-                        location_id,
-                        location,
-                        parameter,
-                        value,
-                        unit,
-                        date_utc,
-                        date_local,
-                        country,
-                        city,
-                        latitude,
-                        longitude,
-                    }
-                },
-            )
-            .collect();
-
-        info!("Retrieved {} measurements for {}", result.len(), country);
-
-        Ok(result)
-    }
+    // Removed unused function get_measurements_for_country
 
     /// Get the latest measurement for each parameter grouped by city for a specific country
     pub async fn get_latest_measurements_by_city(
@@ -644,30 +566,5 @@ mod tests {
         Ok(())
     }
 
-    #[sqlx::test]
-    async fn test_get_measurements_for_country(pool: PgPool) -> Result<()> {
-        insert_test_data(&pool).await?;
-        let db = Database { pool };
-
-        // Test for DE (2 measurements)
-        let result_de = db.get_measurements_for_country("DE").await?;
-        assert_eq!(result_de.len(), 2);
-        // Check if sorted by date descending (most recent first)
-        assert!(result_de[0].date_utc > result_de[1].date_utc);
-        assert!(result_de.iter().all(|m| m.country == "DE"));
-        assert!(result_de.iter().any(|m| m.parameter == "pm25"));
-        assert!(result_de.iter().any(|m| m.parameter == "pm10"));
-
-        // Test for FR (1 measurement)
-        let result_fr = db.get_measurements_for_country("FR").await?;
-        assert_eq!(result_fr.len(), 1);
-        assert_eq!(result_fr[0].country, "FR");
-        assert_eq!(result_fr[0].parameter, "pm25");
-
-        // Test for non-existent country
-        let result_xx = db.get_measurements_for_country("XX").await?;
-        assert_eq!(result_xx.len(), 0);
-
-        Ok(())
-    }
+    // Removed unused test test_get_measurements_for_country
 }
