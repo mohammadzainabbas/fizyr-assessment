@@ -466,10 +466,11 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "integration-tests")]
     #[sqlx::test]
-    #[ignore] // Ignore this test by default, requires a running DB
     async fn test_init_schema(pool: PgPool) -> Result<()> {
         let db = Database { pool };
+        info!("Running integration test: test_init_schema");
         let result = db.init_schema().await;
         assert!(result.is_ok());
 
@@ -499,10 +500,11 @@ mod tests {
     }
 
     #[sqlx::test]
-    #[ignore] // Ignore this test by default, requires a running DB
+    #[cfg(feature = "integration-tests")]
     async fn test_insert_measurements(pool: PgPool) -> Result<()> {
         let db = Database { pool };
         db.init_schema().await?;
+        info!("Running integration test: test_insert_measurements");
 
         let m1 = create_test_measurement("NL", "pm25", 10.0, 1);
         let m2 = create_test_measurement("DE", "pm10", 20.0, 1);
@@ -529,11 +531,12 @@ mod tests {
     }
 
     #[sqlx::test]
-    #[ignore] // Ignore this test by default, requires a running DB
     async fn test_get_most_polluted_country(pool: PgPool) -> Result<()> {
+        #[cfg(feature = "integration-tests")]
         insert_test_data(&pool).await?;
         let db = Database { pool };
 
+        info!("Running integration test: test_get_most_polluted_country");
         let countries = ["NL", "DE", "FR", "GR", "ES", "PK"];
         let result = db.get_most_polluted_country(&countries).await?;
 
@@ -556,12 +559,13 @@ mod tests {
     }
 
     #[sqlx::test]
-    #[ignore] // Ignore this test by default, requires a running DB
     async fn test_get_average_air_quality(pool: PgPool) -> Result<()> {
         insert_test_data(&pool).await?;
+        #[cfg(feature = "integration-tests")]
         let db = Database { pool };
 
         // Test for NL (3 measurements within last 5 days)
+        info!("Running integration test: test_get_average_air_quality");
         // Call with only country code now
         let result_nl = db.get_average_air_quality("NL").await?;
         assert_eq!(result_nl.country, "NL");

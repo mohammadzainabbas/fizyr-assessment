@@ -65,6 +65,9 @@ sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chr
 # num-traits moved to main dependencies
 tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
 
+[features]
+integration-tests = []
+
 [profile.release]
 lto = "thin"           # Enable ThinLTO for better optimization balance
 codegen-units = 1      # Maximize optimization opportunities, standard for release
