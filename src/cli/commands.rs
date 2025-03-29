@@ -4,10 +4,11 @@ use crate::error::{AppError, Result};
 use chrono::{Duration, Utc};
 // Removed clap imports
 use colored::*;
-use dialoguer::{theme::ColorfulTheme, Input, Select}; // Added Input, Select, ColorfulTheme
-use indicatif::{ProgressBar, ProgressStyle}; // Added indicatif
+use comfy_table::{presets::UTF8_FULL, Cell, ContentArrangement, Table}; // Added comfy-table imports
+use dialoguer::{theme::ColorfulTheme, Input, Select};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::env;
-use std::time::Duration as StdDuration; // Added StdDuration for progress bar
+use std::time::Duration as StdDuration;
 use tracing::{error, info};
 
 /// List of countries to consider for pollution analysis
@@ -321,7 +322,7 @@ impl App {
         Ok(())
     }
 
-    /// Get all measurements for a country
+    /// Get latest measurements by city for a country and display as a table
     async fn get_measurements(&self, country: &str) -> Result<()> {
         let country_code = country.to_uppercase();
 
@@ -336,7 +337,7 @@ impl App {
 
         println!(
             "{} {}",
-            "Fetching measurements for".yellow(),
+            "Fetching latest measurements by city for".yellow(),
             country_code.yellow().bold()
         );
         let pb = ProgressBar::new_spinner();
@@ -347,34 +348,60 @@ impl App {
         );
         pb.set_message("Querying database...");
 
-        let measurements = self.db.get_measurements_for_country(&country_code).await?;
+        // Call the new database function
+        let city_measurements = self
+            .db
+            .get_latest_measurements_by_city(&country_code)
+            .await?;
 
         pb.finish_and_clear();
 
-        println!("Measurements for {}", country_code.bold());
-        println!("Total measurements: {}", measurements.len());
-        println!("------------------------------------------");
-
-        for (i, m) in measurements.iter().enumerate() {
-            if i >= 20 {
-                // Show first 20
-                println!(
-                    "... and {} more (showing first 20 only)",
-                    measurements.len() - 20
-                );
-                break;
-            }
-
+        if city_measurements.is_empty() {
             println!(
-                "[{}] {} - {}: {} {} {}", // Removed extra {} between parameter and colon
-                m.date_utc.format("%Y-%m-%d %H:%M").to_string().dimmed(), // Format date
-                m.location.cyan(),
-                m.parameter.blue(),
-                m.value,
-                m.unit.dimmed(),
-                m.city.as_deref().unwrap_or("").italic() // Italicize city
+                "{}",
+                format!("No measurements found for cities in {}", country_code).yellow()
             );
+            return Ok(());
         }
+
+        // Create and configure the table
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .set_content_arrangement(ContentArrangement::Dynamic)
+            .set_header(vec![
+                Cell::new("City"),
+                Cell::new("PM2.5 (µg/m³)"),
+                Cell::new("PM10 (µg/m³)"),
+                Cell::new("O3 (µg/m³)"),
+                Cell::new("NO2 (µg/m³)"),
+                Cell::new("SO2 (µg/m³)"),
+                Cell::new("CO (µg/m³)"),
+                Cell::new("Last Updated (UTC)"),
+            ]);
+
+        // Helper to format Option<Decimal>
+        let format_value = |val: Option<sqlx::types::Decimal>| -> String {
+            val.map(|d| format!("{:.2}", d))
+                .unwrap_or_else(|| "-".to_string())
+        };
+
+        // Add rows to the table
+        for measurement in city_measurements {
+            table.add_row(vec![
+                Cell::new(measurement.city),
+                Cell::new(format_value(measurement.pm25)),
+                Cell::new(format_value(measurement.pm10)),
+                Cell::new(format_value(measurement.o3)),
+                Cell::new(format_value(measurement.no2)),
+                Cell::new(format_value(measurement.so2)),
+                Cell::new(format_value(measurement.co)),
+                Cell::new(measurement.last_updated.format("%Y-%m-%d %H:%M")),
+            ]);
+        }
+
+        // Print the table
+        println!("{table}");
 
         Ok(())
     }
@@ -417,7 +444,9 @@ pub fn prompt_days() -> Result<i64> {
 mod tests {
     use super::*;
     use crate::error::Result;
-    use crate::models::{CountryAirQuality, DbMeasurement, Measurement, PollutionRanking};
+    use crate::models::{
+        CityLatestMeasurements, CountryAirQuality, DbMeasurement, Measurement, PollutionRanking,
+    }; // Added CityLatestMeasurements
     use chrono::{Duration, Utc};
     use num_traits::FromPrimitive; // Correct import path for FromPrimitive
     use sqlx::types::Decimal; // Correct import path for Decimal
@@ -432,10 +461,12 @@ mod tests {
         get_most_polluted_called: bool,
         get_average_called: bool,
         get_measurements_called: bool,
+        get_latest_by_city_called: bool, // Added flag for new method
         // Store expected return values for query methods
         most_polluted_result: Option<Result<PollutionRanking>>,
         average_result: Option<Result<CountryAirQuality>>,
         measurements_result: Option<Result<Vec<DbMeasurement>>>,
+        latest_by_city_result: Option<Result<Vec<CityLatestMeasurements>>>, // Added result for new method
     }
 
     // --- Mock Database ---
@@ -459,8 +490,13 @@ mod tests {
         fn expect_get_average(&self, result: Result<CountryAirQuality>) {
             self.state.lock().unwrap().average_result = Some(result);
         }
+        // Keep old expect_get_measurements for now, might remove later if unused
         fn expect_get_measurements(&self, result: Result<Vec<DbMeasurement>>) {
             self.state.lock().unwrap().measurements_result = Some(result);
+        }
+        // Expectation for the new method
+        fn expect_get_latest_by_city(&self, result: Result<Vec<CityLatestMeasurements>>) {
+            self.state.lock().unwrap().latest_by_city_result = Some(result);
         }
 
         // Mocked database operations used by TestApp (Keep as is)
@@ -497,11 +533,24 @@ mod tests {
             })
         }
 
+        // Keep old get_measurements for now
         async fn get_measurements_for_country(&self, _country: &str) -> Result<Vec<DbMeasurement>> {
             let mut state = self.state.lock().unwrap();
             state.get_measurements_called = true;
             state.measurements_result.take().unwrap_or_else(|| {
                 panic!("MockDatabase::get_measurements_for_country called without expectation")
+            })
+        }
+
+        // Mock for the new method
+        async fn get_latest_measurements_by_city(
+            &self,
+            _country: &str,
+        ) -> Result<Vec<CityLatestMeasurements>> {
+            let mut state = self.state.lock().unwrap();
+            state.get_latest_by_city_called = true;
+            state.latest_by_city_result.take().unwrap_or_else(|| {
+                panic!("MockDatabase::get_latest_measurements_by_city called without expectation")
             })
         }
     }
@@ -531,7 +580,7 @@ mod tests {
                 Commands::Import { days } => self.run_import(days).await,
                 Commands::MostPolluted => self.run_most_polluted().await,
                 Commands::Average(args) => self.run_average(&args.country, args.days).await,
-                Commands::Measurements(args) => self.run_measurements(&args.country).await,
+                Commands::Measurements(args) => self.run_measurements(&args.country).await, // Calls the updated run_measurements
             }
         }
 
@@ -564,24 +613,26 @@ mod tests {
         async fn run_average(&self, country: &str, days: i64) -> Result<()> {
             let country_code = country.to_uppercase();
             if !COUNTRIES.contains(&country_code.as_str()) {
-                return Err(AppError::CliError(format!(
-                    "Invalid country code: {}",
-                    country
-                )));
+                return Err(AppError::Cli(format!("Invalid country code: {}", country)));
             }
             let _result = self.db.get_average_air_quality(&country_code, days).await?;
             Ok(())
         }
 
+        // Updated run_measurements to use the new DB method
         async fn run_measurements(&self, country: &str) -> Result<()> {
             let country_code = country.to_uppercase();
             if !COUNTRIES.contains(&country_code.as_str()) {
-                return Err(AppError::CliError(format!(
-                    "Invalid country code: {}",
-                    country
-                )));
+                return Err(AppError::Cli(format!("Invalid country code: {}", country)));
             }
-            let _measurements = self.db.get_measurements_for_country(&country_code).await?;
+            // Call the new mock DB method
+            let _measurements = self
+                .db
+                .get_latest_measurements_by_city(&country_code)
+                .await?;
+            // In a real test, we might verify the table output here,
+            // but mocking stdout/table generation is complex.
+            // We primarily test that the correct DB function is called.
             Ok(())
         }
     }
@@ -694,29 +745,32 @@ mod tests {
         let result = app.run_command(command).await;
         assert!(result.is_err());
         match result.err().unwrap() {
-            AppError::CliError(msg) => assert!(msg.contains("Invalid country code")),
+            AppError::Cli(msg) => assert!(msg.contains("Invalid country code")), // Use renamed variant Cli
             _ => panic!("Expected CliError"),
         }
         assert!(!app.db.state.lock().unwrap().get_average_called);
     }
 
+    // Updated test for measurements command
     #[tokio::test]
     async fn test_cmd_measurements_valid_country() {
-        // Renamed test
         let app = TestApp::new();
-        let expected_measurements = vec![
-            create_db_measurement("DE", "pm25", 18.0, 1),
-            create_db_measurement("DE", "pm10", 28.0, 1),
+        // Expect the new DB method to be called
+        let expected_city_measurements = vec![
+            // Add some dummy CityLatestMeasurements if needed for more complex assertions
         ];
-        app.db.expect_get_measurements(Ok(expected_measurements));
+        app.db
+            .expect_get_latest_by_city(Ok(expected_city_measurements));
 
         let command = Commands::Measurements(MeasurementsArgs {
-            // Create enum variant
             country: "DE".to_string(),
         });
         let result = app.run_command(command).await;
         assert!(result.is_ok());
-        assert!(app.db.state.lock().unwrap().get_measurements_called);
+        // Verify the new mock DB method was called
+        assert!(app.db.state.lock().unwrap().get_latest_by_city_called);
+        // Optionally, verify the old method was NOT called if it's fully replaced
+        // assert!(!app.db.state.lock().unwrap().get_measurements_called);
     }
 
     #[tokio::test]
@@ -731,9 +785,10 @@ mod tests {
         let result = app.run_command(command).await;
         assert!(result.is_err());
         match result.err().unwrap() {
-            AppError::CliError(msg) => assert!(msg.contains("Invalid country code")),
+            AppError::Cli(msg) => assert!(msg.contains("Invalid country code")), // Use renamed variant Cli
             _ => panic!("Expected CliError"),
         }
-        assert!(!app.db.state.lock().unwrap().get_measurements_called);
+        // Ensure DB method was NOT called
+        assert!(!app.db.state.lock().unwrap().get_latest_by_city_called);
     }
 }

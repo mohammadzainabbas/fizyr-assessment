@@ -121,6 +121,19 @@ impl From<Measurement> for DbMeasurement {
     }
 }
 
+/// Represents the latest measurements for various parameters within a city
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct CityLatestMeasurements {
+    pub city: String,
+    pub pm25: Option<Decimal>,
+    pub pm10: Option<Decimal>,
+    pub o3: Option<Decimal>,
+    pub no2: Option<Decimal>,
+    pub so2: Option<Decimal>,
+    pub co: Option<Decimal>,
+    pub last_updated: DateTime<Utc>,
+}
+
 /// Country air quality summary
 #[derive(Debug, Serialize, Clone)] // Added Clone
 pub struct CountryAirQuality {

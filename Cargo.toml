@@ -53,6 +53,7 @@ rand = "0.8.5"
 colored = "2.1.0"
 dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
 indicatif = "0.17.8"
+comfy-table = "7.1.1" # Added for table output
 
 [dev-dependencies]
 mockito = "1.2.0"

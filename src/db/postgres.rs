@@ -1,8 +1,14 @@
 use crate::error::{AppError, Result};
-use crate::models::{CountryAirQuality, DbMeasurement, Measurement, PollutionRanking};
+use crate::models::{
+    CityLatestMeasurements, // Add new struct
+    CountryAirQuality,
+    DbMeasurement,
+    Measurement,
+    PollutionRanking,
+};
 use chrono::{DateTime, Utc};
-// Removed unused FromPrimitive import
 use rayon::prelude::*;
+use sqlx::types::Decimal; // Import Decimal
 // Removed unused Decimal import
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres};
 use tracing::{debug, error, info};
@@ -402,6 +408,60 @@ impl Database {
         info!("Retrieved {} measurements for {}", result.len(), country);
 
         Ok(result)
+    }
+
+    /// Get the latest measurement for each parameter grouped by city for a specific country
+    pub async fn get_latest_measurements_by_city(
+        &self,
+        country: &str,
+    ) -> Result<Vec<CityLatestMeasurements>> {
+        info!("Fetching latest measurements by city for {}", country);
+
+        // Use DISTINCT ON to get the latest record for each city/parameter combination
+        // Then pivot the data using conditional aggregation
+        let query = r#"
+        WITH latest_city_param AS (
+            SELECT DISTINCT ON (city, parameter)
+                city,
+                parameter,
+                value,
+                date_utc
+            FROM measurements
+            WHERE country = $1 AND city IS NOT NULL
+            ORDER BY city, parameter, date_utc DESC
+        )
+        SELECT
+            city,
+            MAX(CASE WHEN parameter = 'pm25' THEN value ELSE NULL END) as pm25,
+            MAX(CASE WHEN parameter = 'pm10' THEN value ELSE NULL END) as pm10,
+            MAX(CASE WHEN parameter = 'o3' THEN value ELSE NULL END) as o3,
+            MAX(CASE WHEN parameter = 'no2' THEN value ELSE NULL END) as no2,
+            MAX(CASE WHEN parameter = 'so2' THEN value ELSE NULL END) as so2,
+            MAX(CASE WHEN parameter = 'co' THEN value ELSE NULL END) as co,
+            MAX(date_utc) as last_updated -- Get the latest update time for any parameter in the city
+        FROM latest_city_param
+        GROUP BY city
+        ORDER BY city
+        "#;
+
+        let results = sqlx::query_as::<_, CityLatestMeasurements>(query)
+            .bind(country)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to fetch latest measurements by city for {}: {}",
+                    country, e
+                );
+                AppError::Db(e.into())
+            })?;
+
+        info!(
+            "Retrieved latest measurements for {} cities in {}",
+            results.len(),
+            country
+        );
+        Ok(results)
     }
 }
 
