@@ -8,8 +8,6 @@
 use crate::api::OpenAQClient;
 use crate::db::Database;
 use crate::error::{AppError, Result};
-// Removed unused model imports: CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking
-// Removed MockDataProvider import below
 use chrono::{Duration, NaiveTime, Utc};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
@@ -73,9 +71,10 @@ fn get_country_name_map() -> HashMap<&'static str, &'static str> {
 /// Defines the available commands triggerable via the interactive menu.
 #[derive(Debug, Clone)]
 pub enum Commands {
-    /// Initialize or re-initialize the database schema (`measurements` table and indexes).
+    /// Initialize or re-initialize the database schema (`locations`, `sensors`, `measurements` tables and indexes).
     InitDb,
-    /// Import data from the OpenAQ API for a specified number of past days.
+    /// Import data from the OpenAQ API: fetches top 10 locations per country, saves locations/sensors,
+    /// then fetches daily measurements for each sensor for the specified number of past days.
     Import { days: i64 },
     /// Find the most polluted country (from `COUNTRIES`) based on recent PM2.5/PM10 data.
     MostPolluted,
@@ -107,7 +106,6 @@ pub struct MeasurementsByLocalityArgs {
 pub struct App {
     db: Database,
     api_client: OpenAQClient,
-    // mock_provider: MockDataProvider, // Removed field
     state: Arc<Mutex<AppState>>, // Shared, mutable state tracking DB/import status
 }
 
@@ -140,7 +138,6 @@ impl App {
 
         let db = Database::new(&database_url).await?;
         let api_client = OpenAQClient::new(api_key);
-        // let mock_provider = MockDataProvider::new(); // Removed initialization
 
         // Determine initial state by checking database
         let initial_state = if db.has_data_imported().await? {
@@ -155,7 +152,6 @@ impl App {
         Ok(Self {
             db,
             api_client,
-            // mock_provider, // Removed field from initialization
             state: Arc::new(Mutex::new(initial_state)),
         })
     }
@@ -226,22 +222,33 @@ impl App {
         }
     }
 
-    /// Imports data for the specified number of past days for all `COUNTRIES`.
+    /// Imports air quality data for the specified number of past days for all predefined `COUNTRIES`.
     ///
-    /// Imports data for the specified number of past days for all `COUNTRIES`.
+    /// The import process follows these steps:
+    /// 1. Ensures the database schema (`locations`, `sensors`, `measurements`) is initialized.
+    /// 2. Iterates through each country defined in `COUNTRIES`.
+    /// 3. Fetches the top 10 locations for the current country using the OpenAQ API.
+    /// 4. Inserts the fetched location data into the `locations` table.
+    /// 5. Inserts the sensor data associated with these locations into the `sensors` table.
+    /// 6. Collects all successfully saved sensors across all processed countries.
+    /// 7. Iterates through the collected sensors and fetches daily aggregated measurements
+    ///    from the OpenAQ API for the specified date range (`days` ago to now).
+    ///    - Includes retry logic (3 attempts with 10s delay) for measurement fetching errors.
+    /// 8. Converts valid fetched measurements into `DbMeasurement` structs.
+    /// 9. Inserts all collected `DbMeasurement` records into the `measurements` table in a single transaction.
     ///
-    /// Fetches locations for each country, then fetches measurements for each sensor
-    /// at those locations using the OpenAQ v3 API. Data is then converted and
-    /// inserted into the database. Displays progress using `indicatif`.
+    /// Displays progress using `indicatif` progress bars. Handles and logs errors during API calls
+    /// and database operations, attempting to continue processing other countries/sensors where possible.
     ///
     /// # Arguments
     ///
-    /// * `days` - The number of days of historical data to import.
+    /// * `days` - The number of past days (from midnight UTC) for which to import measurement data.
     ///
     /// # Errors
     ///
-    /// Returns `AppError` if schema initialization, API fetching, data conversion,
-    /// or database insertion fails.
+    /// Returns `AppError` if critical operations like schema initialization or the final
+    /// measurement insertion transaction fail. Errors during individual API calls or
+    /// location/sensor insertions are logged, and the process attempts to continue.
     async fn import_data(&self, days: i64) -> Result<()> {
         println!(
             "{} {}",
@@ -927,7 +934,6 @@ mod tests {
     /// specifically for unit testing the command dispatch and validation logic in `App`.
     struct TestApp {
         db: MockDatabase,
-        // mock_provider: MockDataProvider, // Removed field
     }
 
     impl TestApp {

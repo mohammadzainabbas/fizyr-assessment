@@ -95,9 +95,9 @@ impl OpenAQClient {
         sleep(StdDuration::from_millis(100)).await; // e.g., 100ms sleep after each request
     }
 
-    /// Fetches all locations for given country IDs from the OpenAQ v3 API.
+    /// Fetches the top 10 locations (based on OpenAQ default sorting) for given country IDs from the OpenAQ v3 API.
     ///
-    /// Handles pagination to retrieve all available locations.
+    /// Fetches only the first page with a limit of 10.
     ///
     /// # Arguments
     ///
@@ -186,91 +186,9 @@ impl OpenAQClient {
         Ok(locations) // Return the fetched locations directly
     }
 
-    // NOTE: This function is commented out because the Latest and LatestResponse types are not defined
-    // in the models module. If needed, these types should be defined or the function should be updated
-    // to use available types.
-    /*
-    /// Fetches the latest measurement data for a specific location ID.
+    /// Fetches daily aggregated measurements for a specific sensor within a given date range.
     ///
-    /// # Arguments
-    ///
-    /// * `location_id` - The numeric ID of the location.
-    ///
-    /// # Errors
-    ///
-    /// Returns `AppError::Api` if the request fails, the API returns an error,
-    /// or the response cannot be parsed.
-    #[allow(dead_code)] // This function is not currently used by any CLI command
-    pub async fn get_latest_for_location(
-        &self,
-        location_id: i32,
-    ) -> Result<Vec<crate::models::Latest>> {
-        info!("Fetching latest data for location ID: {}", location_id);
-        let url = format!("{}/locations/{}/latest", self.base_url, location_id);
-        debug!("Requesting latest URL: {}", url);
-
-        let response_result = self
-            .client
-            .get(&url)
-            .header("X-API-Key", &self.api_key)
-            .send()
-            .await;
-
-        let response = match response_result {
-            Ok(resp) => resp,
-            Err(e) => {
-                error!(
-                    "Network request failed for latest data (location {}): {}",
-                    location_id, e
-                );
-                return Err(e.into()); // Use From impl
-            },
-        };
-
-        // Check status code
-        let response = match response.error_for_status() {
-            Ok(resp) => resp,
-            Err(e) => {
-                let status = e.status().unwrap_or_default();
-                let error_url = e.url().map(|u| u.as_str()).unwrap_or(&url);
-                error!(
-                    "API request for latest data (location {}) to {} failed with status {}: {}",
-                    location_id, error_url, status, e
-                );
-                return Err(e.into()); // Use From impl
-            },
-        };
-
-        // Clone headers before consuming the body
-        let headers = response.headers().clone();
-
-        // Attempt to parse the successful JSON response directly
-        let api_response: crate::models::LatestResponse = match response.json().await {
-            Ok(parsed) => parsed,
-            Err(e) => {
-                error!(
-                    "Failed to parse latest data JSON response (location {}): {}",
-                    location_id, e
-                );
-                return Err(e.into()); // Let From<reqwest::Error> handle it
-            },
-        };
-
-        // Handle rate limiting using cloned headers
-        self.handle_rate_limit(&headers).await;
-
-        info!(
-            "Successfully fetched {} latest records for location {}",
-            api_response.results.len(),
-            location_id
-        );
-        Ok(api_response.results)
-    }
-    */
-
-    /// Fetches measurements for a specific sensor within a given date range.
-    ///
-    /// Handles pagination to retrieve all available measurements within the range.
+    /// Handles pagination to retrieve all available daily measurements within the range.
     ///
     /// # Arguments
     ///

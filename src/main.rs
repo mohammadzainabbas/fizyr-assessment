@@ -9,7 +9,7 @@ mod db;
 mod error;
 mod models;
 
-use cli::{App, AppState, AverageArgs, Commands, MeasurementsByLocalityArgs}; // Renamed Args struct
+use cli::{App, AppState, AverageArgs, Commands, MeasurementsByLocalityArgs}; // Renamed MeasurementsArgs
 use colored::*;
 use dialoguer::{theme::ColorfulTheme, Select};
 use error::Result;

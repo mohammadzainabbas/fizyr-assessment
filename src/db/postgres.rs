@@ -11,7 +11,6 @@ use crate::models::{
     DbMeasurement,
     PollutionRanking, // Removed unused Measurement
 };
-// use rayon::prelude::*; // Removed unused import
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 use tracing::{debug, error, info};
 
@@ -48,7 +47,7 @@ impl Database {
         Ok(Self { pool })
     }
 
-    /// Initializes the database schema by creating the `measurements` table and necessary indexes.
+    /// Initializes the database schema by creating the `locations`, `sensors`, and `measurements` tables and necessary indexes.
     ///
     /// Uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` to be idempotent,
     /// meaning it can be safely run multiple times without causing errors if the objects already exist.
@@ -110,11 +109,7 @@ impl Database {
             AppError::Db(e.into())
         })?;
 
-        // Create the main table for storing air quality measurements.
-        // Create the main table for storing air quality measurements.
-        // Added sensor_id, parameter_id, parameter_name, location_name, is_mobile, is_monitor, owner_name, provider_name
-        // Renamed location -> location_name, parameter -> parameter_name
-        // Added UNIQUE constraint on (sensor_id, date_utc)
+        // Create the main table for storing daily aggregated air quality measurements.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS measurements (
@@ -212,12 +207,11 @@ impl Database {
         Ok(())
     }
 
-    /// Inserts a batch of `Measurement` records into the database.
+    /// Inserts a batch of `DbMeasurement` records into the database.
     ///
-    /// Converts API `Measurement` structs to `DbMeasurement` in parallel using Rayon.
     /// Executes insertions within a single database transaction for atomicity.
-    /// Uses `ON CONFLICT DO NOTHING` to silently ignore potential duplicate entries
-    /// (based on the `UNIQUE (sensor_id, date_utc)` constraint).
+    /// Uses `ON CONFLICT (sensor_id, date_utc) DO NOTHING` to silently ignore potential duplicate entries
+    /// based on the unique constraint. Assumes input `db_measurements` are already converted.
     ///
     /// # Arguments
     ///
@@ -454,7 +448,6 @@ impl Database {
         // 2. Main Query: Groups by country, calculates the weighted pollution index,
         //    extracts the specific PM2.5 and PM10 averages using MAX(CASE...), orders by the index descending,
         //    and takes the top result.
-        // Removed duplicated/incorrect query block above
         let query = format!(
             r#"
             WITH latest_data AS (
@@ -622,10 +615,10 @@ impl Database {
         }
     }
 
-    /// Gets the latest measurement for each parameter, grouped by city, for a specific country.
+    /// Gets the latest measurement for each parameter, grouped by locality (using the `city` column), for a specific country.
     ///
-    /// Uses `DISTINCT ON` to efficiently find the latest record per city/parameter combination,
-    /// then pivots the data using conditional aggregation (`MAX(CASE...)`) to structure the result.
+    /// Uses `DISTINCT ON (city, parameter_name)` to efficiently find the latest record per locality/parameter combination,
+    /// then pivots the data using conditional aggregation (`MAX(CASE...)`) to structure the result into `CityLatestMeasurements`.
     ///
     /// # Arguments
     ///

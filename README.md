@@ -53,7 +53,7 @@
 > - [x] Interactive CLI menu for user operations (schema init, data import, queries).
 > - [x] Query: Find the most polluted country based on recent PM2.5/PM10.
 > - [x] Query: Calculate 5-day average air quality for a specified country.
-> - [x] Query: Retrieve latest measurements grouped by city for a specified country.
+> - [x] Query: Retrieve latest measurements grouped by locality for a specified country.
 > - [x] Docker integration (`Dockerfile`, `docker-compose.yml`) for easy setup.
 > - [x] GitHub Actions workflow for CI checks (`cargo check`, `cargo fmt -- --check`).
 > - [x] Unit tests for CLI logic and integration tests for database operations.
@@ -82,7 +82,6 @@
 - [`Cargo.toml`](Cargo.toml) & [`Cargo.lock`](Cargo.lock) - Rust project dependencies.
 - [`rustfmt.toml`](rustfmt.toml) - Code formatting configuration.
 - [`LICENSE`](LICENSE) - Project license (MIT).
-- [`README.md`](README.md) - This file.
 
 #
 
@@ -103,106 +102,127 @@
 This method ensures the application runs in a consistent environment with its database dependency.
 
 1.  **Clone the Repository:**
-    ```bash
-    # Using gh CLI
-    gh repo clone mohammadzainabbas/fizyr-assessment
-    cd fizyr-assessment
 
-    # Or using standard git
-    # git clone https://github.com/mohammadzainabbas/fizyr-assessment.git
-    # cd fizyr-assessment
-    ```
+```bash
+# Using gh CLI
+gh repo clone mohammadzainabbas/fizyr-assessment
+
+# Or using standard git
+git clone https://github.com/mohammadzainabbas/fizyr-assessment.git
+
+cd fizyr-assessment
+```
 
 2.  **Configure API Key:**
-    > [!IMPORTANT]
-    > The application requires your OpenAQ API key via the `OPENAQ_KEY` environment variable.
-    Create a `.env` file in the project root:
-    ```dotenv
-    # .env
-    OPENAQ_KEY=your_actual_api_key_here
-    ```
-    The `docker-compose.yml` file is configured to pass this variable to the `app` container.
+
+> [!IMPORTANT]
+> The application requires your OpenAQ API key via the `OPENAQ_KEY` environment variable.
+Create a `.env` file in the project root:
+
+```dotenv
+# .env
+OPENAQ_KEY=your_actual_api_key_here
+```
+
+The `docker-compose.yml` file is configured to pass this variable to the `app` container.
 
 3.  **Start Database Service:**
-    Run the PostgreSQL database container in detached (background) mode. Data persists in the `postgres_data` named volume.
-    ```bash
-    docker-compose up -d database
-    ```
-    > [!TIP]
-    > Allow a few seconds for the database container to initialize fully before proceeding.
+
+Run the PostgreSQL database container in detached (background) mode. Data persists in the `postgres_data` named volume.
+
+```bash
+docker-compose up -d database
+```
+
+> [!TIP]
+> Allow a few seconds for the database container to initialize fully before proceeding.
 
 4.  **Run Application Interactively:**
-    Use `docker-compose run` to start the application interactively. This command creates a temporary container for the `app` service, connects it to the running `database` service, and attaches your terminal.
-    ```bash
-    docker-compose run --rm --build app
-    ```
-    - `--rm`: Automatically removes the container when the application exits.
-    - `--build`: Rebuilds the application image if necessary.
 
-    > [!NOTE]
-    > You should see the welcome message and the interactive menu. Use your keyboard (arrow keys, Enter) to navigate. This `run` command is recommended over `docker-compose up app` due to potential TTY interaction issues observed with the latter on some systems.
+Use `docker-compose run` to start the application interactively. This command creates a temporary container for the `app` service, connects it to the running `database` service, and attaches your terminal.
+
+```bash
+docker-compose run --rm --build app
+```
+
+- `--rm`: Automatically removes the container when the application exits.
+- `--build`: Rebuilds the application image if necessary.
+
+> [!NOTE]
+> You should see the welcome message and the interactive menu. Use your keyboard (arrow keys, Enter) to navigate. This `run` command is recommended over `docker-compose up app` due to potential TTY interaction issues observed with the latter on some systems.
 
 5.  **Using the CLI:**
-    Once the application starts, follow the menu prompts:
-    *   **Initialize Database Schema:** **Run this first!** Creates the `measurements` table.
-    *   **Import Data:** Fetches data from OpenAQ (or uses mock data on failure) for a specified number of days (7-365).
-    *   **Query Options:** Perform analysis like finding the most polluted country, calculating averages, or viewing city-specific data.
+
+Once the application starts, follow the menu prompts:
+
+*   **Initialize Database Schema:** **Run this first!** Creates the `locations`, `sensors`, and `measurements` tables.
+*   **Import Data:** Fetches top 10 locations/country, saves locations/sensors, then fetches daily measurements for sensors for the specified number of days (7-365). Includes retries for measurement fetching.
+*   **Query Options:** Perform analysis like finding the most polluted country, calculating averages, or viewing city-specific data.
 
 6.  **Stopping Services:**
-    *   **App Container:** Exit the application using the "Exit" menu option or press `Ctrl+C` in the terminal where `docker-compose run` is active. The container will be removed automatically due to `--rm`.
-    *   **Database Container:** Stop the background database service:
-        ```bash
-        docker-compose down
-        ```
-    > [!CAUTION]
-    > To stop the database AND **delete all stored air quality data**, use:
-    > ```bash
-    > docker-compose down -v
-    > ```
+*   **App Container:** Exit the application using the "Exit" menu option or press `Ctrl+C` in the terminal where `docker-compose run` is active. The container will be removed automatically due to `--rm`.
+*   **Database Container:** Stop the background database service:
+
+```bash
+docker-compose down
+```
+
+> [!CAUTION]
+> To stop the database AND **delete all stored air quality data**, use:
+> ```bash
+> docker-compose down -v
+> ```
 
 ### Local Development Setup (Alternative)
 
 If you prefer to run outside Docker:
 
 1.  **Setup Environment:**
-    *   Install and run PostgreSQL locally.
-    *   Create a database (e.g., `createdb air_quality`).
-    *   Set environment variables (export in your shell or use a `.env` file):
-        ```dotenv
-        # .env (Example - Adjust DATABASE_URL for your local setup)
-        DATABASE_URL=postgres://your_user:your_password@localhost:5432/air_quality
-        OPENAQ_KEY=your_actual_api_key_here
-        RUST_LOG=info # Optional: Set log level (e.g., debug, trace)
-        ```
+*   Install and run PostgreSQL locally.
+*   Create a database (e.g., `createdb air_quality`).
+*   Set environment variables (export in your shell or use a `.env` file):
+
+```dotenv
+# .env (Example - Adjust DATABASE_URL for your local setup)
+DATABASE_URL=postgres://your_user:your_password@localhost:5432/air_quality
+OPENAQ_KEY=your_actual_api_key_here
+RUST_LOG=info # Optional: Set log level (e.g., debug, trace)
+```
 
 2.  **Build & Run:**
-    ```bash
-    # Build the project
-    cargo build
 
-    # Run the interactive application
-    cargo run
-    ```
-    Follow the CLI menu prompts as described in the Docker section.
+```bash
+# Build the project
+cargo build
+
+# Run the interactive application (make sure that the database is running first)
+cargo run
+```
+
+> [!CAUTION]
+> Ensure your PostgreSQL server is running before running `cargo run` and accessible via the `DATABASE_URL` environment variable. The application will not start if it cannot connect to the database.
+
+Follow the CLI menu prompts as described in the Docker section.
 
 3.  **Run Tests:**
-    *   **Unit Tests:** (Located in `src/cli/commands.rs`)
-        ```bash
-        cargo test
-        ```
-    *   **Database Integration Tests:** (Located in `src/db/postgres.rs`)
-        > [!IMPORTANT]
-        > These tests require a running PostgreSQL database accessible via the `DATABASE_URL` environment variable.
-        ```bash
-        # 1. Ensure your local PostgreSQL or the Dockerized one is running:
-        # docker-compose up -d database
+*   **Unit Tests:** (Located in `src/cli/commands.rs`)
 
-        # 2. Run only the integration tests using the feature flag:
-        cargo test --features integration-tests
+```bash
+cargo test
+```
+*   **Database Integration Tests:** (Located in `src/db/postgres.rs`)
+> [!IMPORTANT]
+> These tests require a running PostgreSQL database accessible via the `DATABASE_URL` environment variable.
+```bash
+# 1. Ensure your local PostgreSQL or the Dockerized one is running:
+docker-compose up -d database
 
-        # 3. Stop the Dockerized database if you started it for the tests:
-        # docker-compose down
-        ```
+# 2. Run only the integration tests using the feature flag:
+cargo test --features integration-tests
+
+# 3. Stop the Dockerized database if you started it for the tests:
+docker-compose down
+```
 
 #
 
@@ -211,12 +231,14 @@ If you prefer to run outside Docker:
 ### Core Logic
 
 The application fetches air quality data for a predefined list of countries (NL, DE, FR, GR, ES, PK) using the [OpenAQ API v3](https://docs.openaq.org/). The import process involves:
+
 1. Fetching the top 10 locations for each country.
 2. Saving these locations and their associated sensor details into dedicated database tables (`locations`, `sensors`).
 3. Fetching daily aggregated measurements for each saved sensor within the user-specified date range, with retry logic for API errors.
 4. Saving the fetched measurements into the `measurements` table.
 
 The core functionality is exposed through an interactive Command Line Interface (CLI) built using `dialoguer`, allowing users to:
+
 1.  Initialize the database schema.
 2.  Import historical data.
 3.  Perform analysis queries on the stored data.
@@ -224,10 +246,11 @@ The core functionality is exposed through an interactive Command Line Interface 
 ### Database Schema
 
 The database uses three main tables:
+
 - **`locations`:** Stores information about each fetched location (ID, name, coordinates, country, etc.). `id` is the primary key.
 - **`sensors`:** Stores details about each sensor (ID, name, parameter info) and includes a foreign key (`location_id`) linking back to the `locations` table. `id` is the primary key.
 - **`measurements`:** Stores the daily aggregated air quality measurements.
-  - **Columns:** Include `id`, `location_id`, `sensor_id` (foreign key to `sensors`), `location_name`, `parameter_id`, `parameter_name`, `value_avg` (as `NUMERIC`), `value_min` (`NUMERIC`), `value_max` (`NUMERIC`), `measurement_count` (`INT`), `unit`, `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country`, `city`, `latitude`, `longitude`, `is_mobile`, `is_monitor`, `owner_name`, `provider_name`, and `created_at`.
+  - **Columns:** Include `id`, `location_id` (denormalized), `sensor_id` (denormalized, corresponds to `sensors.id`), `location_name` (denormalized), `parameter_id` (denormalized), `parameter_name` (denormalized), `value_avg` (`NUMERIC`, nullable), `value_min` (`NUMERIC`, nullable), `value_max` (`NUMERIC`, nullable), `measurement_count` (`INT`, nullable), `unit` (denormalized), `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country` (denormalized), `city` (denormalized locality), `latitude` (denormalized), `longitude` (denormalized), `is_mobile` (denormalized), `is_monitor` (denormalized), `owner_name` (denormalized), `provider_name` (denormalized), and `created_at`.
   - **Constraint:** A `UNIQUE` constraint exists on `(sensor_id, date_utc)` to prevent duplicate daily entries for the same sensor.
 - **Initialization:** All tables are created idempotently (`CREATE TABLE IF NOT EXISTS`) by the `init_schema` function in `src/db/postgres.rs`, triggered via the CLI.
 - **Indexes:** Created on relevant columns in `measurements` (e.g., `country`, `parameter_name`, `date_utc`, `sensor_id`) to optimize query performance.
