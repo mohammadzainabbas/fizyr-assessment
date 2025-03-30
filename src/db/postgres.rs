@@ -407,13 +407,21 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "integration-tests")] // Gate this use statement
     use super::*;
+    #[cfg(feature = "integration-tests")] // Gate this use statement
     use crate::models::{Dates, Measurement};
+    #[cfg(feature = "integration-tests")] // Gate this use statement
     use chrono::{Duration, Utc};
+    #[cfg(feature = "integration-tests")] // Gate this import
     use num_traits::FromPrimitive; // Required for Decimal::from_f64
-    use sqlx::{types::Decimal, PgPool, Row};
+    #[cfg(feature = "integration-tests")] // Gate PgPool use only when tests run
+    use sqlx::PgPool;
+    #[cfg(feature = "integration-tests")] // Gate these imports
+    use sqlx::{types::Decimal, Row};
 
     /// Helper function to create a Measurement instance for testing.
+    #[cfg(feature = "integration-tests")] // Gate this helper function
     fn create_test_measurement(
         country: &str,
         parameter: &str,
@@ -440,6 +448,7 @@ mod tests {
     }
 
     /// Helper function to set up the database schema and insert standard test data.
+    #[cfg(feature = "integration-tests")] // Gate this helper function
     async fn insert_test_data(pool: &PgPool) -> Result<()> {
         let db = Database { pool: pool.clone() };
         db.init_schema().await?; // Ensure schema exists before inserting
@@ -499,12 +508,12 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "integration-tests")] // Apply feature gate to the whole test
     #[sqlx::test]
-    #[cfg(feature = "integration-tests")]
     async fn test_insert_measurements(pool: PgPool) -> Result<()> {
+        info!("Running integration test: test_insert_measurements"); // Log added earlier, keep this one
         let db = Database { pool };
         db.init_schema().await?;
-        info!("Running integration test: test_insert_measurements");
 
         let m1 = create_test_measurement("NL", "pm25", 10.0, 1);
         let m2 = create_test_measurement("DE", "pm10", 20.0, 1);
@@ -530,13 +539,13 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "integration-tests")] // Apply feature gate to the whole test
     #[sqlx::test]
     async fn test_get_most_polluted_country(pool: PgPool) -> Result<()> {
-        #[cfg(feature = "integration-tests")]
-        insert_test_data(&pool).await?;
+        info!("Running integration test: test_get_most_polluted_country"); // Log added earlier, keep this one
+        insert_test_data(&pool).await?; // This will only run if the feature is enabled anyway
         let db = Database { pool };
 
-        info!("Running integration test: test_get_most_polluted_country");
         let countries = ["NL", "DE", "FR", "GR", "ES", "PK"];
         let result = db.get_most_polluted_country(&countries).await?;
 
@@ -558,14 +567,14 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "integration-tests")] // Apply feature gate to the whole test
     #[sqlx::test]
     async fn test_get_average_air_quality(pool: PgPool) -> Result<()> {
+        info!("Running integration test: test_get_average_air_quality"); // Log added earlier, keep this one
         insert_test_data(&pool).await?;
-        #[cfg(feature = "integration-tests")]
-        let db = Database { pool };
+        let db = Database { pool }; // Now this line is always included when the test runs
 
         // Test for NL (3 measurements within last 5 days)
-        info!("Running integration test: test_get_average_air_quality");
         // Call with only country code now
         let result_nl = db.get_average_air_quality("NL").await?;
         assert_eq!(result_nl.country, "NL");
