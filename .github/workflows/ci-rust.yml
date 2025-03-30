@@ -95,8 +95,8 @@ jobs:
           override: true
 
       - name: Start Database Service
-        # Using docker-compose directly is common and effective
-        run: docker-compose up -d database
+        # Use 'docker compose' (space) instead of 'docker-compose' (hyphen)
+        run: docker compose up -d database
 
       - name: Wait for Database Healthcheck
         # Waits for the healthcheck defined in docker-compose.yml to pass
@@ -105,12 +105,13 @@ jobs:
           timeout=60 # seconds
           start_time=$(date +%s)
           # Loop until pg_isready succeeds or timeout is reached
-          while ! docker-compose exec -T database pg_isready -U postgres -h localhost -p 5432 &>/dev/null; do
+          # Use 'docker compose' (space)
+          while ! docker compose exec -T database pg_isready -U postgres -h localhost -p 5432 &>/dev/null; do
             current_time=$(date +%s)
             elapsed_time=$((current_time - start_time))
             if [ $elapsed_time -ge $timeout ]; then
               echo "Database did not become ready within $timeout seconds."
-              docker-compose logs database # Show logs for debugging
+              docker compose logs database # Show logs for debugging (use 'docker compose')
               exit 1
             fi
             echo -n "."
@@ -131,4 +132,5 @@ jobs:
       - name: Stop Services
         # This step runs even if the test step fails, ensuring cleanup
         if: always()
-        run: docker-compose down
+        # Use 'docker compose' (space)
+        run: docker compose down
