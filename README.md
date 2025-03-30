@@ -73,7 +73,7 @@
   - [`db/`](src/db/) - Database interaction logic.
     - [`postgres.rs`](src/db/postgres.rs) - PostgreSQL connection, schema, queries, insertion.
   - [`models/`](src/models/) - Data structures (API responses, DB records, output structs).
-    - [`openaq.rs`](src/models/openaq.rs) - Defines `Measurement`, `DbMeasurement`, etc.
+    - [`openaq.rs`](src/models/openaq.rs) - Defines `DailyMeasurement`, `DbMeasurement`, etc.
   - [`error.rs`](src/error.rs) - Custom application error types (`AppError`).
 - [`logs/`](logs/) - Directory for application logs (created automatically).
 - [`Dockerfile`](Dockerfile) - Defines the container image build process.
@@ -210,7 +210,11 @@ If you prefer to run outside Docker:
 
 ### Core Logic
 
-The application fetches air quality data for a predefined list of countries (NL, DE, FR, GR, ES, PK) using the [OpenAQ API v3](https://docs.openaq.org/). It first retrieves locations for a country, then fetches measurements for each sensor at those locations. This data, including location details, sensor info, and timestamps, is then stored in a PostgreSQL database.
+The application fetches air quality data for a predefined list of countries (NL, DE, FR, GR, ES, PK) using the [OpenAQ API v3](https://docs.openaq.org/). The import process involves:
+1. Fetching the top 10 locations for each country.
+2. Saving these locations and their associated sensor details into dedicated database tables (`locations`, `sensors`).
+3. Fetching daily aggregated measurements for each saved sensor within the user-specified date range, with retry logic for API errors.
+4. Saving the fetched measurements into the `measurements` table.
 
 The core functionality is exposed through an interactive Command Line Interface (CLI) built using `dialoguer`, allowing users to:
 1.  Initialize the database schema.
@@ -219,15 +223,18 @@ The core functionality is exposed through an interactive Command Line Interface 
 
 ### Database Schema
 
-A single table, `measurements`, stores the air quality data.
-- **Columns:** Include `id`, `location_id`, `sensor_id`, `location_name`, `parameter_id`, `parameter_name`, `value` (as `NUMERIC`), `unit`, `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country`, `city`, `latitude`, `longitude`, `is_mobile`, `is_monitor`, `owner_name`, `provider_name`, and `created_at`.
-- **Initialization:** Handled idempotently (`CREATE TABLE IF NOT EXISTS`) by the `init_schema` function in `src/db/postgres.rs`, triggered via the CLI.
-- **Indexes:** Created on `country`, `parameter_name`, `date_utc`, `sensor_id`, and `parameter_id` to optimize common query patterns.
-- **Constraint:** A `UNIQUE` constraint exists on `(sensor_id, date_utc)` to prevent duplicate entries.
+The database uses three main tables:
+- **`locations`:** Stores information about each fetched location (ID, name, coordinates, country, etc.). `id` is the primary key.
+- **`sensors`:** Stores details about each sensor (ID, name, parameter info) and includes a foreign key (`location_id`) linking back to the `locations` table. `id` is the primary key.
+- **`measurements`:** Stores the daily aggregated air quality measurements.
+  - **Columns:** Include `id`, `location_id`, `sensor_id` (foreign key to `sensors`), `location_name`, `parameter_id`, `parameter_name`, `value_avg` (as `NUMERIC`), `value_min` (`NUMERIC`), `value_max` (`NUMERIC`), `measurement_count` (`INT`), `unit`, `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country`, `city`, `latitude`, `longitude`, `is_mobile`, `is_monitor`, `owner_name`, `provider_name`, and `created_at`.
+  - **Constraint:** A `UNIQUE` constraint exists on `(sensor_id, date_utc)` to prevent duplicate daily entries for the same sensor.
+- **Initialization:** All tables are created idempotently (`CREATE TABLE IF NOT EXISTS`) by the `init_schema` function in `src/db/postgres.rs`, triggered via the CLI.
+- **Indexes:** Created on relevant columns in `measurements` (e.g., `country`, `parameter_name`, `date_utc`, `sensor_id`) to optimize query performance.
 
 ### API Interaction (`src/api/`)
 
-- **Client:** `OpenAQClient` in `openaq.rs` uses `reqwest` to make asynchronous GET requests to the relevant OpenAQ v3 endpoints (e.g., `/v3/locations`, `/v3/sensors/{id}/measurements`).
+- **Client:** `OpenAQClient` in `openaq.rs` uses `reqwest` to make asynchronous GET requests to the relevant OpenAQ v3 endpoints (e.g., `/v3/locations`, `/v3/sensors/{id}/measurements/daily`).
 - **Authentication:** Uses the `X-API-Key` header as required by OpenAQ API v3.
 - **Error Handling:** Includes checks for network errors and non-success HTTP status codes (4xx, 5xx), logging relevant details. Pagination is handled within the client methods.
 - **Fallback:** Mock data provider is no longer used for import fallback. API errors during import are logged, and processing may skip affected countries/sensors.
@@ -252,7 +259,7 @@ A single table, `measurements`, stores the air quality data.
 - **Testing:**
     - Unit tests (`src/cli/commands.rs`) use mocking (`MockDatabase`) to test CLI command logic in isolation.
     - Integration tests (`src/db/postgres.rs`) use the `sqlx::test` macro for transactional tests against a real database instance, gated by the `integration-tests` feature flag.
-- **Data Import:** Fetches locations per country, then measurements per sensor. Uses `ON CONFLICT (sensor_id, date_utc) DO NOTHING` during insertion to handle duplicate measurements.
+- **Data Import:** Fetches top 10 locations per country, saves locations and sensors to dedicated tables, then fetches daily measurements for each sensor (with retries) and saves them. Uses `ON CONFLICT (id) DO NOTHING` for locations/sensors and `ON CONFLICT (sensor_id, date_utc) DO NOTHING` for measurements to handle duplicates.
 - **Pollution Index:** Implements a simple weighted index (`pm2.5 * 1.5 + pm10`) for the "most polluted" feature, prioritizing PM2.5.
 
 #

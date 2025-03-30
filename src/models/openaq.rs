@@ -1,17 +1,42 @@
 //! Defines data structures for the application.
 //!
 //! Includes structs for:
-//! - Deserializing OpenAQ API v3 responses.
+//! - Deserializing OpenAQ API v3 responses (Locations, Daily Measurements).
 //! - Representing data stored in the database (`DbMeasurement`).
 //! - Structuring results for CLI output (`CityLatestMeasurements`, `CountryAirQuality`, `PollutionRanking`).
 
 use chrono::{DateTime, Utc};
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sqlx::types::Decimal;
-use tracing::warn; // Use warn for potential conversion issues
+use tracing::warn;
 
 // --- V3 API Response Structs ---
+
+// Helper function to deserialize 'found' which can be u32 or ">10" string
+fn deserialize_found<'de, D>(deserializer: D) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let value: Option<Value> = Option::deserialize(deserializer)?;
+
+    match value {
+        Some(Value::Number(num)) => num
+            .as_u64()
+            .map(|v| v as u32)
+            .ok_or_else(|| D::Error::custom("Invalid number for 'found' field"))
+            .map(Some),
+        Some(Value::String(s)) if s.starts_with('>') => Ok(None), // Treat ">10" etc. as unknown count (None)
+        Some(other) => Err(D::Error::custom(format!(
+            "Unexpected type for 'found' field: {:?}",
+            other
+        ))),
+        None => Ok(None), // Handle null case
+    }
+}
 
 /// Generic Metadata for V3 API responses.
 #[allow(dead_code)] // Fields might not all be used currently
@@ -21,7 +46,8 @@ pub struct MetaV3 {
     pub website: String,
     pub page: u32,
     pub limit: u32,
-    pub found: Option<u32>, // 'found' might not always be present
+    #[serde(deserialize_with = "deserialize_found")]
+    pub found: Option<u32>, // Now correctly deserialized as Option<u32> or None
 }
 
 /// Represents geographical coordinates (reusable).
@@ -92,14 +118,15 @@ pub struct SensorBase {
 
 /// Response structure for the `/v3/locations` endpoint.
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)] // Allow unused fields like 'meta'
 pub struct LocationsResponse {
     pub meta: MetaV3,
     pub results: Vec<Location>,
 }
 
 /// Represents a single location from the `/v3/locations` endpoint.
-#[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)] // Fields might not all be used currently
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Location {
     pub id: i32,
@@ -121,143 +148,175 @@ pub struct Location {
     pub datetime_last: Option<DatetimeObject>,
 }
 
-/// Response structure for the `/v3/locations/{id}/latest` endpoint.
-#[allow(dead_code)] // Fields might not all be used currently
+// --- Daily Measurement Structs ---
+
+/// Response structure for the `/v3/sensors/{id}/measurements/daily` endpoint.
 #[derive(Debug, Deserialize, Clone)]
-pub struct LatestResponse {
+pub struct DailyMeasurementResponse {
     pub meta: MetaV3,
-    pub results: Vec<Latest>,
+    pub results: Vec<DailyMeasurement>,
 }
 
-/// Represents a single latest measurement value for a sensor at a location.
-#[derive(Debug, Deserialize, Clone)]
-#[allow(dead_code)] // Fields might not all be used currently
-#[serde(rename_all = "camelCase")]
-pub struct Latest {
-    pub datetime: DatetimeObject,
-    pub value: f64,
-    pub coordinates: Coordinates, // Coordinates of the specific sensor/measurement
-    pub sensors_id: i32,          // Link back to the sensor
-    pub locations_id: i32,        // Link back to the location
-                                  // Note: Parameter info is implicitly tied via the sensor_id,
-                                  // you might need to fetch sensor details separately if needed here.
-}
-
-/// Response structure for the `/v3/sensors/{id}/measurements` endpoint.
-#[derive(Debug, Deserialize, Clone)]
-pub struct MeasurementsResponse {
-    pub meta: MetaV3,
-    pub results: Vec<MeasurementV3>,
-}
-
-/// Represents a single measurement from the `/v3/sensors/{id}/measurements` endpoint.
+/// Represents a single daily aggregated measurement.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct MeasurementV3 {
-    pub value: f64,
+#[allow(dead_code)] // Allow unused fields like 'coordinates'
+pub struct DailyMeasurement {
+    pub value: f64, // This is the average value for the day
     // pub flag_info: FlagInfo, // Simplified for now
-    pub parameter: ParameterBase, // Parameter details included here
-    pub period: Option<Period>,   // Included for aggregated results
-    pub coordinates: Option<Coordinates>, // Coordinates for this specific measurement/sensor
-                                  // pub summary: Option<Summary>, // Simplified for now
-                                  // pub coverage: Option<Coverage>, // Simplified for now
-                                  // Need to add datetime information - assuming it's part of 'period' or needs separate fetch context
-                                  // Let's assume we need the timestamp from the request context or fetch separately for now.
-                                  // We will need location_id and country_code from the context of the request as well.
+    pub parameter: ParameterBase,
+    pub period: Period, // Contains the date range for the aggregation
+    pub coordinates: Option<Coordinates>, // Coordinates might be null for aggregated data
+    pub summary: Option<Summary>, // Contains min, max, avg, etc.
+    pub coverage: Option<Coverage>, // Contains info about data completeness
 }
 
 /// Represents the time period for aggregated measurements.
-#[derive(Debug, Deserialize, Clone)]
 #[allow(dead_code)] // Fields might not all be used currently
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Period {
     pub label: String,
-    pub interval: String,
-    pub datetime_from: Option<DatetimeObject>,
-    pub datetime_to: Option<DatetimeObject>,
+    pub interval: String,              // e.g., "24:00:00" for daily
+    pub datetime_from: DatetimeObject, // Start of the aggregation period
+    pub datetime_to: DatetimeObject,   // End of the aggregation period
 }
 
-// --- Database and Output Structs (Potentially need adjustments later) ---
+/// Represents summary statistics for an aggregated period.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Allow unused fields like 'q02', 'median', etc.
+pub struct Summary {
+    pub min: Option<f64>,
+    pub q02: Option<f64>,
+    pub q25: Option<f64>,
+    pub median: Option<f64>,
+    pub q75: Option<f64>,
+    pub q98: Option<f64>,
+    pub max: Option<f64>,
+    pub avg: Option<f64>, // Should match the top-level 'value'
+    pub sd: Option<f64>,  // Standard deviation
+}
 
-/// Represents a measurement structured for storage in the PostgreSQL database.
-/// Derives `sqlx::FromRow` for easy mapping from query results.
+/// Represents data coverage information for an aggregated period.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)] // Allow unused fields like 'expected_count', etc.
+pub struct Coverage {
+    pub expected_count: Option<i32>,
+    pub expected_interval: Option<String>,
+    pub observed_count: Option<i32>,
+    pub observed_interval: Option<String>,
+    pub percent_complete: Option<f64>,
+    pub percent_coverage: Option<f64>,
+    pub datetime_from: Option<DatetimeObject>, // Actual start of observed data
+    pub datetime_to: Option<DatetimeObject>,   // Actual end of observed data
+}
+
+// --- Database and Output Structs ---
+
+/// Represents a daily aggregated measurement structured for storage in the PostgreSQL database.
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct DbMeasurement {
-    /// Primary key (auto-generated by the database, None before insertion).
+    /// Primary key (auto-generated by the database).
     pub id: Option<i32>,
-    pub location_id: i64, // Changed from i32 to i64 to match potential API types if needed, check DB schema
-    pub sensor_id: Option<i64>, // Added sensor ID
-    pub location_name: String, // Changed from 'location'
-    pub parameter_id: i32, // Added parameter ID
-    pub parameter_name: String, // Changed from 'parameter'
-    /// Measurement value stored as `Decimal` for precision.
-    pub value: Decimal,
+    pub location_id: i64,
+    pub sensor_id: i64,      // Made non-optional assuming we always get it
+    pub sensor_name: String, // Added
+    pub location_name: String,
+    pub parameter_id: i32,
+    pub parameter_name: String,
+    pub parameter_display_name: Option<String>, // Added
+    /// Average value for the day (stored as Decimal).
+    pub value_avg: Decimal,
+    /// Minimum value for the day (stored as Decimal).
+    pub value_min: Option<Decimal>,
+    /// Maximum value for the day (stored as Decimal).
+    pub value_max: Option<Decimal>,
+    /// Number of measurements observed during the day.
+    pub measurement_count: Option<i32>,
     pub unit: String,
+    /// Start date/time (UTC) of the aggregation period (day).
     pub date_utc: DateTime<Utc>,
+    /// Start date/time (local) of the aggregation period (day).
     pub date_local: String,
     pub country: String, // Country code
     pub city: Option<String>,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
-    pub is_mobile: bool,       // Added field
-    pub is_monitor: bool,      // Added field
-    pub owner_name: String,    // Added field
-    pub provider_name: String, // Added field
+    pub is_mobile: bool,
+    pub is_monitor: bool,
+    pub owner_name: String,
+    pub provider_name: String,
 }
 
 impl DbMeasurement {
-    /// Creates a `DbMeasurement` from an API `MeasurementV3` and its associated `Location` context.
-    ///
-    /// Handles potential conversion issues (e.g., f64 to Decimal) and extracts relevant fields.
-    /// Requires the sensor ID and measurement timestamp to be passed explicitly, as they are
-    /// not directly part of the `MeasurementV3` struct itself in all API responses.
-    pub fn from_v3_measurement(
-        m: &MeasurementV3,
+    /// Creates a `DbMeasurement` from an API `DailyMeasurement` and its associated `Location` and `SensorBase` context.
+    pub fn from_daily_measurement(
+        m: &DailyMeasurement,
         location: &Location,
-        sensor_id: i32,
-        measurement_time: DateTime<Utc>, // Explicitly pass the measurement time
+        sensor: &SensorBase,
     ) -> Self {
-        // Determine the best available local timestamp string
-        let date_local_str = m
-            .period
-            .as_ref()
-            .and_then(|p| p.datetime_from.as_ref()) // Prefer datetime_from if available (e.g., hourly aggregates)
-            .map(|dt| dt.local.clone())
-            .unwrap_or_else(|| measurement_time.to_rfc3339()); // Fallback to UTC RFC3339 string
+        // Use summary values if available, otherwise use the top-level average value
+        let avg_val = m.summary.as_ref().and_then(|s| s.avg).unwrap_or(m.value);
+        let min_val = m.summary.as_ref().and_then(|s| s.min);
+        let max_val = m.summary.as_ref().and_then(|s| s.max);
+        let measurement_count = m.coverage.as_ref().and_then(|c| c.observed_count);
 
-        // Determine best coordinates, preferring measurement-specific, fallback to location
-        let latitude = m
-            .coordinates
-            .as_ref()
-            .and_then(|c| c.latitude)
-            .or(location.coordinates.latitude);
-        let longitude = m
-            .coordinates
-            .as_ref()
-            .and_then(|c| c.longitude)
-            .or(location.coordinates.longitude);
+        // Helper to convert Option<f64> to Option<Decimal>, filtering out negative values
+        let to_decimal_opt = |val: Option<f64>| -> Option<Decimal> {
+            val.filter(|&v| v >= 0.0) // Filter out negative values first
+                .and_then(|v| {
+                    Decimal::from_f64(v).or_else(|| {
+                        warn!("Could not convert f64 {} to Decimal precisely.", v);
+                        None // Return None if conversion fails
+                    })
+                })
+        };
+
+        // Filter avg_val before converting
+        let value_avg_decimal = if avg_val >= 0.0 {
+            Decimal::from_f64(avg_val).unwrap_or_else(|| {
+                warn!(
+                    "Could not convert average f64 {} to Decimal precisely. Storing as ZERO.",
+                    avg_val
+                );
+                Decimal::ZERO // Or consider storing NULL if conversion fails? For now, ZERO.
+            })
+        } else {
+            // If avg_val is negative (like -999), store ZERO (or NULL if preferred)
+            // Storing ZERO might slightly skew averages if many invalid points exist,
+            // but avoids NULL complications in current queries.
+            warn!(
+                "Negative avg_val {} encountered for sensor {}. Storing as ZERO.",
+                avg_val, sensor.id
+            );
+            Decimal::ZERO
+        };
 
         Self {
-            id: None, // ID is generated by the database
-            location_id: location.id as i64, // Cast to i64 if DB expects bigint
-            sensor_id: Some(sensor_id as i64), // Cast to i64 if DB expects bigint
-            location_name: location.name.clone().unwrap_or_else(|| format!("Location {}", location.id)), // Use ID if name is null
+            id: None,
+            location_id: location.id as i64,
+            sensor_id: sensor.id as i64,
+            sensor_name: sensor.name.clone(),
+            location_name: location
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("Location {}", location.id)),
             parameter_id: m.parameter.id,
             parameter_name: m.parameter.name.clone(),
-            value: Decimal::from_f64(m.value).unwrap_or_else(|| {
-                warn!(
-                    "Could not convert f64 {} to Decimal precisely for parameter {} (sensor {}, location {}). Storing as 0.",
-                    m.value, m.parameter.name, sensor_id, location.id
-                );
-                Decimal::ZERO // Use Decimal::ZERO for safety
-            }),
+            parameter_display_name: m.parameter.display_name.clone(),
+            value_avg: value_avg_decimal, // Use the filtered and converted value
+            value_min: to_decimal_opt(min_val), // Use helper which now filters negatives
+            value_max: to_decimal_opt(max_val), // Use helper which now filters negatives
+            measurement_count,
             unit: m.parameter.units.clone(),
-            date_utc: measurement_time,
-            date_local: date_local_str,
+            date_utc: m.period.datetime_from.utc, // Use the start of the daily period
+            date_local: m.period.datetime_from.local.clone(),
             country: location.country.code.clone(),
-            city: location.locality.clone(), // Use locality as city name
-            latitude,
-            longitude,
+            city: location.locality.clone(),
+            latitude: location.coordinates.latitude, // Use location coordinates
+            longitude: location.coordinates.longitude,
             is_mobile: location.is_mobile,
             is_monitor: location.is_monitor,
             owner_name: location.owner.name.clone(),

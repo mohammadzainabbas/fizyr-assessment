@@ -10,7 +10,7 @@ use crate::db::Database;
 use crate::error::{AppError, Result};
 // Removed unused model imports: CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking
 // Removed MockDataProvider import below
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveTime, Utc};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
@@ -44,6 +44,18 @@ pub const COUNTRIES: [&str; 6] = [
     "ES", // Spain
     "PK", // Pakistan
 ];
+
+/// A mapping from country codes to their corresponding IDs in the OpenAQ API.
+pub fn get_country_id_map() -> std::collections::HashMap<&'static str, u32> {
+    let mut map = std::collections::HashMap::new();
+    map.insert("PK", 109); // Pakistan
+    map.insert("NL", 94); // Netherlands
+    map.insert("DE", 50); // Germany
+    map.insert("GR", 80); // Greece
+    map.insert("ES", 67); // Spain
+    map.insert("FR", 22); // France
+    map
+}
 
 /// Returns a map associating country codes with their full names.
 /// Used for displaying user-friendly names in prompts and output.
@@ -238,138 +250,206 @@ impl App {
         info!("Ensuring database schema exists before import...");
         self.db.init_schema().await?; // Idempotent schema initialization
 
-        let end_date = Utc::now();
-        let start_date = end_date - Duration::days(days);
+        // Calculate date range aligned to midnight UTC
+        let today_utc = Utc::now().date_naive();
+        let end_date = today_utc
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+            .and_local_timezone(Utc)
+            .unwrap();
+        let start_date = (today_utc - Duration::days(days))
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+            .and_local_timezone(Utc)
+            .unwrap();
         info!("Importing data from {} to {}", start_date, end_date);
 
-        let mut all_db_measurements = Vec::new();
         let total_countries = COUNTRIES.len();
-        let pb_outer = Self::create_progress_bar(total_countries as u64);
-        pb_outer.set_message("Fetching locations...");
+        let pb_locations = Self::create_progress_bar(total_countries as u64);
+        pb_locations.set_message("Fetching & saving locations/sensors...");
 
+        // Store (location, sensor) pairs to fetch measurements later
+        let mut sensors_to_fetch: Vec<(crate::models::Location, crate::models::SensorBase)> =
+            Vec::new();
+
+        // --- Step 1 & 2: Fetch and Save Locations/Sensors per Country ---
         for country_code in COUNTRIES.iter() {
-            pb_outer.set_message(format!("Processing {}...", country_code));
+            pb_locations.set_message(format!("Processing {}...", country_code));
             info!("Fetching locations for country: {}", country_code);
 
+            let country_id_map = get_country_id_map();
+            let country_id = match country_id_map.get(country_code) {
+                Some(id) => *id, // Dereference id
+                None => {
+                    error!(
+                        "No country ID mapping found for {}. Skipping.",
+                        country_code
+                    );
+                    pb_locations.println(format!(
+                        "{} No country ID mapping found for {}. Skipping.",
+                        "Error:".red(),
+                        country_code
+                    ));
+                    pb_locations.inc(1);
+                    continue;
+                },
+            };
+
+            // Fetch top 10 locations for the country
             let locations = match self
                 .api_client
-                .get_locations_for_country(country_code)
+                .get_locations_for_country(&[country_id])
                 .await
             {
                 Ok(locs) => locs,
                 Err(e) => {
                     error!(
-                        "Failed to fetch locations for {}: {}. Skipping country.",
-                        country_code, e
+                        "Failed to fetch locations for {} (ID: {}): {}. Skipping.",
+                        country_code, country_id, e
                     );
-                    pb_outer.println(format!(
-                        "{} Failed to fetch locations for {}: {}. Skipping.",
+                    pb_locations.println(format!(
+                        "{} Failed to fetch locations for {} (ID: {}): {}. Skipping.",
                         "Error:".red(),
                         country_code,
+                        country_id,
                         e
                     ));
-                    pb_outer.inc(1); // Increment outer progress bar even on skip
-                    continue; // Skip to the next country
+                    pb_locations.inc(1);
+                    continue;
                 },
             };
-            info!("Found {} locations for {}", locations.len(), country_code);
+            info!("Fetched {} locations for {}", locations.len(), country_code);
 
             if locations.is_empty() {
-                pb_outer.println(format!(
+                pb_locations.println(format!(
                     "{} No locations found for {}. Skipping.",
                     "Warning:".yellow(),
-                    country_code,
+                    country_code
                 ));
-                pb_outer.inc(1);
+                pb_locations.inc(1);
                 continue;
             }
 
-            let pb_inner = Self::create_progress_bar(locations.len() as u64);
-            pb_inner.set_message(format!(
-                "Fetching measurements for {} locations...",
-                country_code
-            ));
-
-            for location in locations {
-                pb_inner.set_message(format!(
-                    "Loc {}: {} sensors",
-                    location.id,
-                    location.sensors.len()
-                ));
-                info!(
-                    "Processing location ID: {} ({} sensors)",
-                    location.id,
-                    location.sensors.len()
+            // Save locations to DB
+            if let Err(e) = self.db.insert_locations(&locations).await {
+                error!(
+                    "Failed to insert locations for {}: {}. Skipping country's sensors.",
+                    country_code, e
                 );
+                pb_locations.println(format!(
+                    "{} Failed to save locations for {}: {}. Skipping sensors.",
+                    "Error:".red(),
+                    country_code,
+                    e
+                ));
+                pb_locations.inc(1);
+                continue;
+            }
 
-                for sensor in &location.sensors {
-                    info!("Fetching measurements for sensor ID: {}", sensor.id);
-                    let measurements_v3 = match self
-                        .api_client
-                        .get_measurements_for_sensor(sensor.id, start_date, end_date)
-                        .await
-                    {
-                        Ok(m) => m,
-                        Err(e) => {
-                            error!(
-                                "Failed to fetch measurements for sensor {}: {}. Skipping sensor.",
-                                sensor.id, e
-                            );
-                            pb_inner.println(format!(
-                                "{} Failed to fetch measurements for sensor {}: {}. Skipping.",
-                                "Warning:".yellow(),
-                                sensor.id,
-                                e
-                            ));
-                            continue; // Skip to the next sensor
-                        },
-                    };
-
-                    info!(
-                        "Fetched {} measurements for sensor {}",
-                        measurements_v3.len(),
-                        sensor.id
-                    );
-
-                    // Convert MeasurementV3 to DbMeasurement using the implemented function
-                    for m_v3 in measurements_v3 {
-                        // Determine the measurement time. The API doesn't return it directly
-                        // in the /measurements endpoint result items. We assume the measurement
-                        // corresponds roughly to the start of its period if available,
-                        // otherwise we might need a different strategy or accept potential inaccuracy.
-                        // For now, let's use the period's start time or fallback to `start_date`
-                        // of the query range as a rough estimate.
-                        // FIXME: This timestamp handling might need refinement based on API behavior.
-                        let measurement_time = m_v3
-                            .period
-                            .as_ref()
-                            .and_then(|p| p.datetime_from.as_ref())
-                            .map(|dt| dt.utc)
-                            .unwrap_or(start_date); // Fallback to query start time
-
-                        let db_m = crate::models::DbMeasurement::from_v3_measurement(
-                            &m_v3,
-                            &location,
-                            sensor.id,
-                            measurement_time,
-                        );
-                        all_db_measurements.push(db_m);
+            // Save sensors and collect them for measurement fetching
+            for loc in locations {
+                if let Err(e) = self.db.insert_sensors(loc.id as i64, &loc.sensors).await {
+                    // Log error but continue processing other locations/sensors
+                    error!("Failed to insert sensors for location {}: {}", loc.id, e);
+                    pb_locations.println(format!(
+                        "{} Failed to save sensors for location {}: {}.",
+                        "Warning:".yellow(),
+                        loc.id,
+                        e
+                    ));
+                } else {
+                    // Add sensors to the list for fetching measurements later
+                    for sensor in loc.sensors.iter() {
+                        sensors_to_fetch.push((loc.clone(), sensor.clone())); // Clone necessary data
                     }
                 }
-                pb_inner.inc(1); // Increment inner progress bar after processing a location
             }
-            pb_inner.finish_with_message(format!("Finished fetching for {}", country_code));
-            pb_outer.inc(1); // Increment outer progress bar after processing a country
+            pb_locations.inc(1);
         }
-        pb_outer.finish_with_message("Finished fetching all countries.");
+        pb_locations.finish_with_message("Finished fetching & saving locations/sensors.");
 
+        // --- Step 3 & 4: Fetch and Save Measurements for All Collected Sensors ---
+        if sensors_to_fetch.is_empty() {
+            println!("{}", "No sensors found to fetch measurements for.".yellow());
+            info!("Data import process finished: No sensors found.");
+            return Ok(());
+        }
+
+        let pb_measurements = Self::create_progress_bar(sensors_to_fetch.len() as u64);
+        pb_measurements.set_message("Fetching measurements...");
+        let mut all_db_measurements = Vec::new();
+        let max_retries = 3;
+        let retry_delay = StdDuration::from_secs(10);
+
+        for (location_context, sensor) in sensors_to_fetch {
+            pb_measurements.set_message(format!("Sensor {}...", sensor.id));
+            info!("Fetching measurements for sensor ID: {}", sensor.id);
+            let mut measurements_v3 = None; // Option to hold fetched measurements
+
+            for attempt in 0..max_retries {
+                match self
+                    .api_client
+                    .get_measurements_for_sensor(sensor.id, start_date, end_date)
+                    .await
+                {
+                    Ok(m) => {
+                        measurements_v3 = Some(m);
+                        break; // Success, exit retry loop
+                    },
+                    Err(e) => {
+                        error!(
+                            "Attempt {}/{} failed to fetch measurements for sensor {}: {}",
+                            attempt + 1,
+                            max_retries,
+                            sensor.id,
+                            e
+                        );
+                        if attempt + 1 < max_retries {
+                            pb_measurements.println(format!(
+                                "{} Retrying sensor {} after {:?}...",
+                                "Warning:".yellow(),
+                                sensor.id,
+                                retry_delay
+                            ));
+                            tokio::time::sleep(retry_delay).await;
+                        } else {
+                            pb_measurements.println(format!(
+                                "{} Failed to fetch measurements for sensor {} after {} attempts: {}. Skipping.",
+                                "Error:".red(), sensor.id, max_retries, e
+                            ));
+                        }
+                    },
+                }
+            }
+
+            // Process measurements if fetched successfully
+            if let Some(fetched_measurements) = measurements_v3 {
+                info!(
+                    "Fetched {} measurements for sensor {}",
+                    fetched_measurements.len(),
+                    sensor.id
+                );
+                for m_v3 in fetched_measurements {
+                    let db_m = crate::models::DbMeasurement::from_daily_measurement(
+                        &m_v3,
+                        &location_context, // Use the stored location context
+                        &sensor,           // Use the stored sensor context
+                    );
+                    all_db_measurements.push(db_m);
+                }
+            }
+            pb_measurements.inc(1);
+        }
+        pb_measurements.finish_with_message("Finished fetching measurements.");
+
+        // --- Step 4 (Continued): Insert Measurements into DB ---
         if all_db_measurements.is_empty() {
-            println!("{}", "No measurements fetched to insert.".yellow());
+            println!(
+                "{}",
+                "No measurements fetched successfully to insert.".yellow()
+            );
             info!("Data import process finished: No measurements fetched.");
             return Ok(());
         }
 
-        // Insert all collected measurements into the database
         println!(
             "{}",
             format!(
@@ -379,7 +459,7 @@ impl App {
             .yellow()
         );
         let pb_insert = Self::create_spinner("Inserting data into database...");
-        self.db.insert_measurements(&all_db_measurements).await?; // Assuming insert_measurements accepts Vec<DbMeasurement>
+        self.db.insert_measurements(&all_db_measurements).await?;
         pb_insert.finish_with_message("Data insertion completed successfully!".to_string());
         info!("Inserted {} total measurements.", all_db_measurements.len());
         info!("Data import process finished.");
@@ -885,15 +965,25 @@ mod tests {
                     // Create one placeholder DbMeasurement per country for the test
                     crate::models::DbMeasurement {
                         id: None,
-                        location_id: 1,     // Placeholder
-                        sensor_id: Some(1), // Placeholder
+                        location_id: 1,                         // Placeholder
+                        sensor_id: 1, // Placeholder (Made non-optional based on model change)
+                        sensor_name: "Mock Sensor".to_string(), // Added
                         location_name: "Mock Location".to_string(),
-                        parameter_id: 1,                       // Placeholder
-                        parameter_name: "pm25".to_string(),    // Placeholder
-                        value: sqlx::types::Decimal::from(10), // Placeholder
+                        parameter_id: 1,                    // Placeholder
+                        parameter_name: "pm25".to_string(), // Placeholder
+                        parameter_display_name: Some("PM2.5".to_string()), // Added
+                        value_avg: sqlx::types::Decimal::from(10), // Renamed from value
+                        value_min: Some(sqlx::types::Decimal::from(8)), // Added
+                        value_max: Some(sqlx::types::Decimal::from(12)), // Added
+                        measurement_count: Some(24),        // Added
                         unit: "µg/m³".to_string(),
-                        date_utc: Utc::now(),
-                        date_local: Utc::now().to_rfc3339(),
+                        date_utc: Utc::now()
+                            .date_naive()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap()
+                            .and_local_timezone(Utc)
+                            .unwrap(), // Use start of day
+                        date_local: Utc::now().date_naive().to_string(), // Use date string
                         country: country.to_string(),
                         city: Some("Mock City".to_string()),
                         latitude: Some(0.0),

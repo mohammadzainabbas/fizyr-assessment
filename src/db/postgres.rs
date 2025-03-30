@@ -59,6 +59,57 @@ impl Database {
     pub async fn init_schema(&self) -> Result<()> {
         info!("Initializing database schema (if necessary)...");
 
+        // Create locations table
+        sqlx::query(
+            r#"
+                CREATE TABLE IF NOT EXISTS locations (
+                    id BIGINT PRIMARY KEY, -- OpenAQ location ID
+                    name TEXT,
+                    locality TEXT, -- Often the city name
+                    country_code TEXT NOT NULL,
+                    country_name TEXT NOT NULL,
+                    timezone TEXT NOT NULL,
+                    latitude DOUBLE PRECISION,
+                    longitude DOUBLE PRECISION,
+                    datetime_first TIMESTAMPTZ,
+                    datetime_last TIMESTAMPTZ,
+                    is_mobile BOOLEAN NOT NULL,
+                    is_monitor BOOLEAN NOT NULL,
+                    owner_name TEXT,
+                    provider_name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to create locations table: {}", e);
+            AppError::Db(e.into())
+        })?;
+
+        // Create sensors table
+        sqlx::query(
+            r#"
+                CREATE TABLE IF NOT EXISTS sensors (
+                    id BIGINT PRIMARY KEY, -- OpenAQ sensor ID
+                    location_id BIGINT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    parameter_id INT NOT NULL,
+                    parameter_name TEXT NOT NULL,
+                    units TEXT NOT NULL,
+                    display_name TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to create sensors table: {}", e);
+            AppError::Db(e.into())
+        })?;
+
         // Create the main table for storing air quality measurements.
         // Create the main table for storing air quality measurements.
         // Added sensor_id, parameter_id, parameter_name, location_name, is_mobile, is_monitor, owner_name, provider_name
@@ -69,11 +120,15 @@ impl Database {
             CREATE TABLE IF NOT EXISTS measurements (
                 id SERIAL PRIMARY KEY,
                 location_id BIGINT NOT NULL,
-                sensor_id BIGINT, -- Can be NULL if data source doesn't provide it? Make NOT NULL if always available.
+                sensor_id BIGINT NOT NULL, -- Made explicitly NOT NULL to match struct/usage
                 location_name TEXT NOT NULL, -- Renamed from location
                 parameter_id INT NOT NULL,
                 parameter_name TEXT NOT NULL, -- Renamed from parameter
-                value NUMERIC NOT NULL, -- Using NUMERIC for precise storage
+                value_avg NUMERIC NOT NULL, -- Using NUMERIC for precise storage
+                value_min NUMERIC, -- Minimum value during the period
+                value_max NUMERIC, -- Maximum value during the period
+                measurement_count INT, -- Number of observations during the period
+
                 unit TEXT NOT NULL,
                 date_utc TIMESTAMPTZ NOT NULL,
                 date_local TEXT NOT NULL, -- Storing local time as text as provided by API
@@ -197,28 +252,31 @@ impl Database {
             sqlx::query(
                 r#"
                 INSERT INTO measurements
-                (location_id, sensor_id, location_name, parameter_id, parameter_name, value, unit, date_utc, date_local, country, city, latitude, longitude, is_mobile, is_monitor, owner_name, provider_name)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                (location_id, sensor_id, location_name, parameter_id, parameter_name, value_avg, value_min, value_max, measurement_count, unit, date_utc, date_local, country, city, latitude, longitude, is_mobile, is_monitor, owner_name, provider_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
                 ON CONFLICT (sensor_id, date_utc) DO NOTHING
                 "#,
             )
-            .bind(m.location_id)
-            .bind(m.sensor_id) // Bind new field
-            .bind(&m.location_name) // Bind renamed field
-            .bind(m.parameter_id) // Bind new field
-            .bind(&m.parameter_name) // Bind renamed field
-            .bind(m.value)
-            .bind(&m.unit)
-            .bind(m.date_utc)
-            .bind(&m.date_local)
-            .bind(&m.country)
-            .bind(&m.city)
-            .bind(m.latitude)
-            .bind(m.longitude)
-            .bind(m.is_mobile) // Bind new field
-            .bind(m.is_monitor) // Bind new field
-            .bind(&m.owner_name) // Bind new field
-            .bind(&m.provider_name) // Bind new field
+            .bind(m.location_id)         // $1
+            .bind(m.sensor_id)           // $2
+            .bind(&m.location_name)      // $3
+            .bind(m.parameter_id)        // $4
+            .bind(&m.parameter_name)     // $5
+            .bind(m.value_avg)           // $6
+            .bind(m.value_min)           // $7
+            .bind(m.value_max)           // $8
+            .bind(m.measurement_count)   // $9
+            .bind(&m.unit)               // $10
+            .bind(m.date_utc)            // $11
+            .bind(&m.date_local)         // $12
+            .bind(&m.country)            // $13
+            .bind(&m.city)               // $14
+            .bind(m.latitude)            // $15
+            .bind(m.longitude)           // $16
+            .bind(m.is_mobile)           // $17
+            .bind(m.is_monitor)          // $18
+            .bind(&m.owner_name)         // $19
+            .bind(&m.provider_name)      // $20
             .execute(&mut *tx) // Execute within the transaction
             .await
             .map_err(|e| {
@@ -226,7 +284,7 @@ impl Database {
                 error!("Failed to insert measurement record (sensor_id: {:?}, date_utc: {}): {}", m.sensor_id, m.date_utc, e);
                 AppError::Db(e.into())
             })?;
-        }
+        } // End of for loop
 
         // Commit the transaction if all insertions were successful.
         tx.commit().await.map_err(|e| {
@@ -238,6 +296,128 @@ impl Database {
             "Successfully processed {} measurements for insertion (duplicates ignored).",
             db_measurements.len()
         );
+        Ok(())
+    } // End of function
+
+    /// Inserts a batch of `Location` records into the database.
+    /// Uses `ON CONFLICT DO NOTHING` to ignore duplicates based on the primary key `id`.
+    pub async fn insert_locations(&self, locations: &[crate::models::Location]) -> Result<()> {
+        if locations.is_empty() {
+            debug!("No locations provided for insertion.");
+            return Ok(());
+        }
+        info!("Inserting {} locations into database...", locations.len());
+
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            error!("Failed to begin transaction for locations: {}", e);
+            AppError::Db(e.into())
+        })?;
+
+        for loc in locations {
+            sqlx::query(
+                r#"
+                INSERT INTO locations
+                (id, name, locality, country_code, country_name, timezone, latitude, longitude, datetime_first, datetime_last, is_mobile, is_monitor, owner_name, provider_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (id) DO NOTHING
+                "#,
+            )
+            .bind(loc.id as i64) // Cast id to i64 for BIGINT column
+            .bind(&loc.name)
+            .bind(&loc.locality)
+            .bind(&loc.country.code)
+            .bind(&loc.country.name)
+            .bind(&loc.timezone)
+            .bind(loc.coordinates.latitude)
+            .bind(loc.coordinates.longitude)
+            .bind(loc.datetime_first.as_ref().map(|dt| dt.utc)) // Handle Option<DateTimeObject>
+            .bind(loc.datetime_last.as_ref().map(|dt| dt.utc))  // Handle Option<DateTimeObject>
+            .bind(loc.is_mobile)
+            .bind(loc.is_monitor)
+            .bind(&loc.owner.name)
+            .bind(&loc.provider.name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                error!("Failed to insert location record (id: {}): {}", loc.id, e);
+                AppError::Db(e.into())
+            })?;
+        }
+
+        tx.commit().await.map_err(|e| {
+            error!("Failed to commit transaction for locations: {}", e);
+            AppError::Db(e.into())
+        })?;
+
+        info!(
+            "Successfully processed {} locations for insertion.",
+            locations.len()
+        );
+        Ok(())
+    }
+
+    /// Inserts a batch of `SensorBase` records associated with a location ID into the database.
+    /// Uses `ON CONFLICT DO NOTHING` to ignore duplicates based on the primary key `id`.
+    pub async fn insert_sensors(
+        &self,
+        location_id: i64,
+        sensors: &[crate::models::SensorBase],
+    ) -> Result<()> {
+        if sensors.is_empty() {
+            debug!(
+                "No sensors provided for insertion for location {}.",
+                location_id
+            );
+            return Ok(());
+        }
+        // Consider reducing log verbosity if this becomes too noisy
+        // info!("Inserting {} sensors for location {}...", sensors.len(), location_id);
+
+        // Use a transaction for inserting sensors of a single location
+        let mut tx = self.pool.begin().await.map_err(|e| {
+            error!(
+                "Failed to begin transaction for sensors (location {}): {}",
+                location_id, e
+            );
+            AppError::Db(e.into())
+        })?;
+
+        for sensor in sensors {
+            sqlx::query(
+                r#"
+                INSERT INTO sensors
+                (id, location_id, name, parameter_id, parameter_name, units, display_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (id) DO NOTHING
+                "#,
+            )
+            .bind(sensor.id as i64) // Cast id to i64 for BIGINT column
+            .bind(location_id)
+            .bind(&sensor.name)
+            .bind(sensor.parameter.id)
+            .bind(&sensor.parameter.name)
+            .bind(&sensor.parameter.units)
+            .bind(&sensor.parameter.display_name)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                error!(
+                    "Failed to insert sensor record (id: {}, location_id: {}): {}",
+                    sensor.id, location_id, e
+                );
+                AppError::Db(e.into())
+            })?;
+        }
+
+        tx.commit().await.map_err(|e| {
+            error!(
+                "Failed to commit transaction for sensors (location {}): {}",
+                location_id, e
+            );
+            AppError::Db(e.into())
+        })?;
+
+        // info!("Successfully processed {} sensors for location {}.", sensors.len(), location_id);
         Ok(())
     }
 
@@ -281,7 +461,7 @@ impl Database {
                 SELECT
                     country,
                     parameter_name, -- Use new column name
-                    AVG(value::DOUBLE PRECISION) as avg_value -- Cast NUMERIC to float for calculation
+                    AVG(value_avg::DOUBLE PRECISION) as avg_value -- Cast NUMERIC to float for calculation
                 FROM measurements
                 WHERE
                     country IN ('{}') -- Injecting the list here (less safe than binding)
@@ -363,12 +543,12 @@ impl Database {
         let query = r#"
         SELECT
             country,
-            AVG(CASE WHEN parameter_name = 'pm25' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm25,
-            AVG(CASE WHEN parameter_name = 'pm10' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm10,
-            AVG(CASE WHEN parameter_name = 'o3' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_o3,
-            AVG(CASE WHEN parameter_name = 'no2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_no2,
-            AVG(CASE WHEN parameter_name = 'so2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_so2,
-            AVG(CASE WHEN parameter_name = 'co' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_co,
+            AVG(CASE WHEN parameter_name = 'pm25' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_pm25,
+            AVG(CASE WHEN parameter_name = 'pm10' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_pm10,
+            AVG(CASE WHEN parameter_name = 'o3' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_o3,
+            AVG(CASE WHEN parameter_name = 'no2' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_no2,
+            AVG(CASE WHEN parameter_name = 'so2' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_so2,
+            AVG(CASE WHEN parameter_name = 'co' THEN value_avg::DOUBLE PRECISION ELSE NULL END) as avg_co,
             COUNT(*) as measurement_count
         FROM measurements
         WHERE
@@ -472,7 +652,7 @@ impl Database {
             SELECT DISTINCT ON (city, parameter_name) -- Use new column name
                 city,
                 parameter_name, -- Use new column name
-                value, -- The value from the latest record
+                value_avg, -- The value from the latest record
                 date_utc -- The timestamp from the latest record
             FROM measurements
             WHERE country = $1 AND city IS NOT NULL -- Filter by country, ignore null cities
@@ -481,12 +661,12 @@ impl Database {
         SELECT
             city,
             -- Pivot parameter values into columns
-            MAX(CASE WHEN parameter_name = 'pm25' THEN value ELSE NULL END) as pm25,
-            MAX(CASE WHEN parameter_name = 'pm10' THEN value ELSE NULL END) as pm10,
-            MAX(CASE WHEN parameter_name = 'o3' THEN value ELSE NULL END) as o3,
-            MAX(CASE WHEN parameter_name = 'no2' THEN value ELSE NULL END) as no2,
-            MAX(CASE WHEN parameter_name = 'so2' THEN value ELSE NULL END) as so2,
-            MAX(CASE WHEN parameter_name = 'co' THEN value ELSE NULL END) as co,
+            MAX(CASE WHEN parameter_name = 'pm25' THEN value_avg ELSE NULL END) as pm25,
+            MAX(CASE WHEN parameter_name = 'pm10' THEN value_avg ELSE NULL END) as pm10,
+            MAX(CASE WHEN parameter_name = 'o3' THEN value_avg ELSE NULL END) as o3,
+            MAX(CASE WHEN parameter_name = 'no2' THEN value_avg ELSE NULL END) as no2,
+            MAX(CASE WHEN parameter_name = 'so2' THEN value_avg ELSE NULL END) as so2,
+            MAX(CASE WHEN parameter_name = 'co' THEN value_avg ELSE NULL END) as co,
             -- Find the overall latest update time for the city across all parameters
             MAX(date_utc) as last_updated
         FROM latest_city_param
@@ -588,17 +768,18 @@ mod tests {
     /// Helper function to create a `DbMeasurement` instance for testing purposes.
     fn create_test_db_measurement(
         country: &str,
-        parameter_name: &str, // Changed from parameter
-        value: f64,
+        parameter_name: &str,
+        avg_value: f64,
+        min_value: Option<f64>,
+        max_value: Option<f64>,
+        count: Option<i32>,
         days_ago: i64,
     ) -> DbMeasurement {
-        // Changed return type
         let timestamp = Utc::now() - Duration::days(days_ago);
         let mut rng = rand::thread_rng();
-        let location_id: i64 = rng.gen_range(1000..10000); // Example random ID
-        let sensor_id: i64 = location_id * 10 + rng.gen_range(0..10); // Example sensor ID
+        let location_id: i64 = rng.gen_range(1000..10000);
+        let sensor_id: i64 = location_id * 10 + rng.gen_range(0..10);
         let parameter_id: i32 = match parameter_name {
-            // Assign dummy IDs based on name
             "pm25" => 1,
             "pm10" => 2,
             "no2" => 3,
@@ -607,23 +788,29 @@ mod tests {
             "co" => 6,
             _ => 0,
         };
+        let to_decimal_opt =
+            |val: Option<f64>| -> Option<Decimal> { val.and_then(Decimal::from_f64) };
 
         DbMeasurement {
-            id: None, // DB generates ID
+            id: None,
             location_id,
-            sensor_id: Some(sensor_id),
-            location_name: format!("Test Location {}", country), // Renamed field
+            sensor_id,                                    // Now i64
+            sensor_name: format!("Sensor {}", sensor_id), // Added
+            location_name: format!("Test Location {}", country),
             parameter_id,
-            parameter_name: parameter_name.to_string(), // Renamed field
-            value: Decimal::from_f64(value).unwrap_or_else(|| Decimal::ZERO), // Use Decimal
+            parameter_name: parameter_name.to_string(),
+            parameter_display_name: Some(parameter_name.to_uppercase()), // Added
+            value_avg: Decimal::from_f64(avg_value).unwrap_or(Decimal::ZERO),
+            value_min: to_decimal_opt(min_value), // Use helper
+            value_max: to_decimal_opt(max_value), // Use helper
+            measurement_count: count,             // Use parameter
             unit: "µg/m³".to_string(),
-            date_utc: timestamp,                // Renamed field
-            date_local: timestamp.to_rfc3339(), // Renamed field
+            date_utc: timestamp,
+            date_local: timestamp.to_rfc3339(),
             country: country.to_string(),
             city: Some(format!("Test City {}", country)),
-            latitude: Some(52.0), // Renamed field
-            longitude: Some(5.0), // Renamed field
-            // Add new fields
+            latitude: Some(52.0),
+            longitude: Some(5.0),
             is_mobile: false,
             is_monitor: true,
             owner_name: "Test Owner".to_string(),
@@ -638,23 +825,22 @@ mod tests {
         db.init_schema().await?; // Ensure schema exists
 
         let measurements = vec![
-            // Netherlands data (recent)
-            // Use the new helper function returning DbMeasurement
-            create_test_db_measurement("NL", "pm25", 15.0, 1),
-            create_test_db_measurement("NL", "pm10", 25.0, 1),
-            create_test_db_measurement("NL", "no2", 30.0, 1),
-            // Germany data (recent)
-            create_test_db_measurement("DE", "pm25", 18.0, 1),
-            create_test_db_measurement("DE", "pm10", 28.0, 1),
-            // Pakistan data (recent, higher pollution)
-            create_test_db_measurement("PK", "pm25", 50.0, 1),
-            create_test_db_measurement("PK", "pm10", 80.0, 1),
-            // France data (older, outside 5-day window for avg test)
-            create_test_db_measurement("FR", "pm25", 10.0, 6),
-            // Greece data (recent)
-            create_test_db_measurement("GR", "pm10", 22.0, 1),
-            // Spain data (recent)
-            create_test_db_measurement("ES", "pm25", 12.0, 1),
+            // Netherlands data (recent) - Added min/max/count
+            create_test_db_measurement("NL", "pm25", 15.0, Some(10.0), Some(20.0), Some(22), 1),
+            create_test_db_measurement("NL", "pm10", 25.0, Some(20.0), Some(30.0), Some(23), 1),
+            create_test_db_measurement("NL", "no2", 30.0, Some(25.0), Some(35.0), Some(24), 1),
+            // Germany data (recent) - Added min/max/count
+            create_test_db_measurement("DE", "pm25", 18.0, Some(12.0), Some(22.0), Some(20), 1),
+            create_test_db_measurement("DE", "pm10", 28.0, Some(24.0), Some(32.0), Some(21), 1),
+            // Pakistan data (recent, higher pollution) - Added min/max/count
+            create_test_db_measurement("PK", "pm25", 50.0, Some(40.0), Some(60.0), Some(18), 1),
+            create_test_db_measurement("PK", "pm10", 80.0, Some(70.0), Some(90.0), Some(19), 1),
+            // France data (older, outside 5-day window for avg test) - Added min/max/count
+            create_test_db_measurement("FR", "pm25", 10.0, Some(8.0), Some(12.0), Some(24), 6),
+            // Greece data (recent) - Added min/max/count
+            create_test_db_measurement("GR", "pm10", 22.0, Some(18.0), Some(26.0), Some(23), 1),
+            // Spain data (recent) - Added min/max/count
+            create_test_db_measurement("ES", "pm25", 12.0, Some(9.0), Some(15.0), Some(22), 1),
         ];
         // insert_measurements now expects &[DbMeasurement]
         db.insert_measurements(&measurements).await?;
@@ -683,8 +869,10 @@ mod tests {
         // Verify indexes exist using pg_indexes
         let indexes = [
             "idx_measurements_country",
-            "idx_measurements_parameter",
+            "idx_measurements_parameter_name", // Updated index name
             "idx_measurements_date_utc",
+            "idx_measurements_sensor_id", // Added check for sensor_id index
+            "idx_measurements_parameter_id", // Added check for parameter_id index
         ];
         for index_name in indexes {
             let index_exists = sqlx::query_scalar::<_, bool>(
@@ -711,11 +899,12 @@ mod tests {
         db.init_schema().await?; // Prerequisite: schema must exist
 
         // Use the new helper function
-        let m1 = create_test_db_measurement("NL", "pm25", 10.5, 1);
-        let m2 = create_test_db_measurement("DE", "pm10", 20.2, 1);
+        // Use the updated helper function with min/max/count
+        let m1 = create_test_db_measurement("NL", "pm25", 10.5, Some(8.0), Some(12.0), Some(20), 1);
+        let m2 =
+            create_test_db_measurement("DE", "pm10", 20.2, Some(15.0), Some(25.0), Some(21), 1);
         let measurements = vec![m1.clone(), m2.clone()];
 
-        // insert_measurements now expects &[DbMeasurement]
         let result = db.insert_measurements(&measurements).await;
         assert!(result.is_ok(), "insert_measurements should succeed");
 
@@ -725,23 +914,36 @@ mod tests {
             .await?;
         assert_eq!(count, 2, "Should be 2 measurements inserted");
 
-        // Verify specific inserted data using new column names
-        let row = sqlx::query_as::<_, DbMeasurement>(
-            "SELECT * FROM measurements WHERE country = 'NL' AND parameter_name = 'pm25'", // Use parameter_name
+        // Verify specific inserted data for m1 (NL, pm25)
+        let row1 = sqlx::query_as::<_, DbMeasurement>(
+            "SELECT * FROM measurements WHERE country = 'NL' AND parameter_name = 'pm25'",
         )
         .fetch_one(&db.pool)
         .await?;
-        assert_eq!(row.country, "NL");
-        assert_eq!(row.parameter_name, "pm25"); // Check parameter_name
-                                                // Compare Decimal values carefully
-        assert_eq!(
-            row.value,
-            Decimal::from_f64(10.5).unwrap(),
-            "Inserted value mismatch for NL pm25"
-        );
-        assert_eq!(row.location_id, m1.location_id);
-        assert_eq!(row.sensor_id, m1.sensor_id); // Check new field
-        assert_eq!(row.location_name, m1.location_name); // Check renamed field
+        assert_eq!(row1.country, "NL");
+        assert_eq!(row1.parameter_name, "pm25");
+        assert_eq!(row1.value_avg, Decimal::from_f64(10.5).unwrap());
+        assert_eq!(row1.value_min, Some(Decimal::from_f64(8.0).unwrap())); // Check new field
+        assert_eq!(row1.value_max, Some(Decimal::from_f64(12.0).unwrap())); // Check new field
+        assert_eq!(row1.measurement_count, Some(20)); // Check new field
+        assert_eq!(row1.location_id, m1.location_id);
+        assert_eq!(row1.sensor_id, m1.sensor_id);
+        assert_eq!(row1.location_name, m1.location_name);
+        assert_eq!(row1.parameter_display_name, Some("PM25".to_string())); // Check added field
+        assert_eq!(row1.sensor_name, m1.sensor_name); // Check added field
+
+        // Verify specific inserted data for m2 (DE, pm10)
+        let row2 = sqlx::query_as::<_, DbMeasurement>(
+            "SELECT * FROM measurements WHERE country = 'DE' AND parameter_name = 'pm10'",
+        )
+        .fetch_one(&db.pool)
+        .await?;
+        assert_eq!(row2.country, "DE");
+        assert_eq!(row2.parameter_name, "pm10");
+        assert_eq!(row2.value_avg, Decimal::from_f64(20.2).unwrap());
+        assert_eq!(row2.value_min, Some(Decimal::from_f64(15.0).unwrap()));
+        assert_eq!(row2.value_max, Some(Decimal::from_f64(25.0).unwrap()));
+        assert_eq!(row2.measurement_count, Some(21));
 
         Ok(())
     }
