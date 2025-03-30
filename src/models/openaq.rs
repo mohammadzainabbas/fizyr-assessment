@@ -1,23 +1,26 @@
-//! Defines data structures used throughout the application, including those for
-//! deserializing OpenAQ API responses, representing data in the database,
-//! and structuring results for display.
+//! Defines data structures for the application.
+//!
+//! Includes structs for:
+//! - Deserializing OpenAQ API responses (`OpenAQMeasurementResponse`, `Measurement`, etc.).
+//! - Representing data stored in the database (`DbMeasurement`).
+//! - Structuring results for CLI output (`CityLatestMeasurements`, `CountryAirQuality`, `PollutionRanking`).
 
 use chrono::{DateTime, Utc};
 use num_traits::FromPrimitive;
 use serde::{Deserialize, Serialize};
 use sqlx::types::Decimal;
 
-/// Represents the top-level structure of the OpenAQ API response for measurements.
+/// Represents the top-level structure of the OpenAQ API v3 `/measurements` response.
 #[derive(Debug, Deserialize)]
 pub struct OpenAQMeasurementResponse {
-    /// Metadata associated with the API response. Field renamed for deserialization.
+    /// Metadata from the API response (pagination, etc.). Field renamed for deserialization.
     #[serde(rename = "meta")]
     pub _meta: Meta,
-    /// The list of measurement results.
+    /// List of air quality measurement results.
     pub results: Vec<Measurement>,
 }
 
-/// Contains metadata provided by the OpenAQ API, such as pagination info.
+/// Metadata provided in OpenAQ API responses.
 #[derive(Debug, Deserialize)]
 pub struct Meta {
     #[serde(rename = "name")]
@@ -31,10 +34,10 @@ pub struct Meta {
     #[serde(rename = "limit")]
     pub _limit: i32,
     #[serde(rename = "found")]
-    pub _found: i32,
+    pub _found: i32, // Total number of records found by the API query
 }
 
-/// Represents the top-level structure of the OpenAQ API response for countries (unused currently).
+/// Represents the top-level structure of the OpenAQ API `/countries` response (currently unused).
 #[derive(Debug, Deserialize)]
 pub struct OpenAQCountryResponse {
     #[serde(rename = "meta")]
@@ -43,7 +46,7 @@ pub struct OpenAQCountryResponse {
     pub _results: Vec<Country>,
 }
 
-/// Represents country information as returned by the OpenAQ API (unused currently).
+/// Represents country information from the OpenAQ API (currently unused).
 #[derive(Debug, Deserialize)]
 pub struct Country {
     #[serde(rename = "code")]
@@ -51,68 +54,68 @@ pub struct Country {
     #[serde(rename = "name")]
     pub _name: String,
     #[serde(rename = "locations")]
-    pub _locations: i32,
+    pub _locations: i32, // Number of measurement locations
     #[serde(rename = "count")]
-    pub _count: i64,
+    pub _count: i64, // Total number of measurements
 }
 
-/// Represents geographical coordinates (latitude and longitude).
+/// Represents geographical coordinates.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Coordinates {
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
 }
 
-/// Represents date and time information for a measurement, in both UTC and local time.
+/// Represents date and time information for a measurement.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Dates {
-    /// The timestamp in UTC.
+    /// Timestamp in UTC.
     pub utc: DateTime<Utc>,
-    /// The timestamp in local time as a string (format may vary).
+    /// Timestamp in local time as an ISO 8601 formatted string (provided by OpenAQ).
     pub local: String,
 }
 
-/// Represents the numerical value of a measurement (unused directly, part of `Measurement`).
+/// Represents the numerical value of a measurement (part of `Measurement`, not used standalone).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Value {
     pub value: f64,
 }
 
-/// Represents a single air quality measurement as returned by the OpenAQ API.
-/// This is the primary structure used for API deserialization.
+/// Represents a single air quality measurement from the OpenAQ API.
+/// This is the primary structure used for deserializing API results.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Measurement {
-    /// The unique identifier for the location. Field renamed for deserialization.
+    /// The unique identifier for the location (from OpenAQ). Field renamed for deserialization.
     #[serde(rename = "locationId")]
     pub location_id: i64,
-    /// The name of the location.
+    /// The name of the location (from OpenAQ).
     pub location: String,
     /// The measured parameter (e.g., "pm25", "o3").
     pub parameter: String,
     /// The measured value.
     pub value: f64,
-    /// Date and time of the measurement.
+    /// Date and time of the measurement (UTC and local).
     pub date: Dates,
     /// The unit of the measurement (e.g., "µg/m³").
     pub unit: String,
-    /// Geographical coordinates of the location.
+    /// Geographical coordinates of the location, if available.
     pub coordinates: Option<Coordinates>,
-    /// The 2-letter country code.
+    /// The 2-letter country code (ISO 3166-1 alpha-2).
     pub country: String,
     /// The city name, if available.
     pub city: Option<String>,
 }
 
-/// Represents a measurement as stored in the PostgreSQL database.
+/// Represents a measurement structured for storage in the PostgreSQL database.
 /// Derives `sqlx::FromRow` for easy mapping from query results.
 #[derive(Debug, Serialize, Clone, sqlx::FromRow)]
 pub struct DbMeasurement {
-    /// Primary key (auto-generated by the database).
+    /// Primary key (auto-generated by the database, None before insertion).
     pub id: Option<i32>,
     pub location_id: i64,
     pub location: String,
     pub parameter: String,
-    /// Measurement value stored as a precise Decimal type.
+    /// Measurement value stored as `Decimal` for precision.
     pub value: Decimal,
     pub unit: String,
     pub date_utc: DateTime<Utc>,
@@ -127,18 +130,26 @@ pub struct DbMeasurement {
 impl From<Measurement> for DbMeasurement {
     fn from(m: Measurement) -> Self {
         Self {
-            id: None, // ID is generated by the database
+            id: None, // ID is generated by the database on INSERT
             location_id: m.location_id,
             location: m.location,
-            parameter: m.parameter,
-            // Convert f64 to Decimal, handling potential precision issues gracefully
-            value: Decimal::from_f64(m.value).unwrap_or_default(),
-            unit: m.unit,
+            parameter: m.parameter.clone(), // Clone here to keep original for closure
+            // Convert f64 to Decimal for precise storage, defaulting if conversion fails.
+            value: Decimal::from_f64(m.value).unwrap_or_else(|| {
+                // Log potential precision loss or handle appropriately if needed
+                eprintln!(
+                    "Warning: Could not convert f64 {} to Decimal precisely for parameter {}",
+                    m.value,
+                    m.parameter // Now uses the original m.parameter before the clone
+                );
+                Decimal::from_f64(0.0).unwrap() // Or consider Decimal::ZERO if using newer rust_decimal
+            }),
+            unit: m.unit, // Original m.unit is moved here
             date_utc: m.date.utc,
             date_local: m.date.local,
             country: m.country,
             city: m.city,
-            // Extract latitude and longitude from the nested Coordinates struct
+            // Extract latitude/longitude from the nested Option<Coordinates>
             latitude: m.coordinates.as_ref().and_then(|c| c.latitude),
             longitude: m.coordinates.as_ref().and_then(|c| c.longitude),
         }
@@ -146,29 +157,29 @@ impl From<Measurement> for DbMeasurement {
 }
 
 /// Represents the latest measurement value for each pollutant within a specific city.
-/// Used for the "Measurements by City" command output. Derives `sqlx::FromRow`.
+/// Used as the result type for the "Get Measurements by City" query. Derives `sqlx::FromRow`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CityLatestMeasurements {
     /// The name of the city.
     pub city: String,
-    /// Latest PM2.5 value (as Decimal).
+    /// Latest PM2.5 value (Decimal for precision).
     pub pm25: Option<Decimal>,
-    /// Latest PM10 value (as Decimal).
+    /// Latest PM10 value (Decimal for precision).
     pub pm10: Option<Decimal>,
-    /// Latest O3 value (as Decimal).
+    /// Latest O3 value (Decimal for precision).
     pub o3: Option<Decimal>,
-    /// Latest NO2 value (as Decimal).
+    /// Latest NO2 value (Decimal for precision).
     pub no2: Option<Decimal>,
-    /// Latest SO2 value (as Decimal).
+    /// Latest SO2 value (Decimal for precision).
     pub so2: Option<Decimal>,
-    /// Latest CO value (as Decimal).
+    /// Latest CO value (Decimal for precision).
     pub co: Option<Decimal>,
-    /// Timestamp of the most recent measurement among all parameters for this city.
+    /// Timestamp of the most recent measurement update among any parameter for this city.
     pub last_updated: DateTime<Utc>,
 }
 
-/// Represents the calculated average air quality metrics for a country over a specific period.
-/// Used for the "Average Air Quality" command output.
+/// Represents the calculated average air quality metrics for a country over a 5-day period.
+/// Used as the result type for the "Calculate Average Air Quality" query.
 #[derive(Debug, Serialize, Clone)]
 pub struct CountryAirQuality {
     pub country: String,
@@ -178,30 +189,31 @@ pub struct CountryAirQuality {
     pub avg_no2: Option<f64>,
     pub avg_so2: Option<f64>,
     pub avg_co: Option<f64>,
-    /// The total number of measurements used to calculate the averages.
+    /// The total number of measurements contributing to the averages within the period.
     pub measurement_count: i64,
 }
 
 /// Represents the pollution ranking for a country based on a calculated index.
-/// Used for the "Most Polluted Country" command output.
+/// Used as the result type for the "Find Most Polluted Country" query.
 #[derive(Debug, Serialize, Clone)]
 pub struct PollutionRanking {
     pub country: String,
-    /// A calculated index representing overall pollution (higher is worse).
+    /// A calculated index representing overall pollution (higher indicates more pollution).
+    /// Currently based on weighted average of recent PM2.5 and PM10.
     pub pollution_index: f64,
-    /// The average PM2.5 value used in the index calculation.
+    /// The average PM2.5 value (µg/m³) used in the index calculation (if available).
     pub pm25_avg: Option<f64>,
-    /// The average PM10 value used in the index calculation.
+    /// The average PM10 value (µg/m³) used in the index calculation (if available).
     pub pm10_avg: Option<f64>,
 }
 
 impl PollutionRanking {
-    /// Creates a default `PollutionRanking` instance for a country, typically used
-    /// when no data is found.
+    /// Creates a default `PollutionRanking` instance with a zero index,
+    /// typically used when no recent pollution data is found for a country.
     pub fn new(country: &str) -> Self {
         Self {
             country: country.to_string(),
-            pollution_index: 0.0, // Default to 0 index
+            pollution_index: 0.0, // Default to 0 index when no data
             pm25_avg: None,
             pm10_avg: None,
         }

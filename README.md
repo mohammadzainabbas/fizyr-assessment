@@ -1,238 +1,248 @@
-# Air Quality Analysis CLI
+<div align="center">
+    <h3> Air Quality Analysis CLI <code>Assessment</code> 💻 </h3>
+</div>
 
-A command-line tool for analyzing air quality data from the OpenAQ API. This project was developed as part of the Fizyr assessment for the Data Pipeline / DevOps Engineer position.
+#
 
-## Features
+> [!NOTE]
+> This project is a Rust CLI tool developed as a take-home assessment for the `Data Pipeline / DevOps Engineer` position at **Fizyr**. It fetches air quality data from the [OpenAQ API](https://openaq.org/), stores it in a PostgreSQL database, and provides query capabilities.
 
-- Interactive menu for easy operation.
-- Fetch and store air quality data from the OpenAQ API (v3) for predefined countries (NL, DE, FR, GR, ES, PK).
-- Initialize database schema.
-- Import data for a specified number of past days (uses mock data as fallback if API fails).
-- Find the most polluted country among the predefined list based on recent PM2.5 and PM10 data.
-- Calculate average air quality metrics for a specific country over a specified number of days.
-- Display the latest measurements for all parameters, grouped by city, for a specific country.
-- Logging to `logs/app.log`.
-- Multi-stage Docker build for efficient containerization.
-- GitHub Actions workflow for CI checks (check, fmt, clippy).
+<div align="center">
 
-## Prerequisites
+<table>
+  <tr>
+    <td><strong>CI</strong></td>
+    <td>
+      <a href="https://github.com/mohammadzainabbas/bol-assessment/actions/workflows/ci-rust.yml">
+        <img src="https://github.com/mohammadzainabbas/bol-assessment/actions/workflows/ci-rust.yml/badge.svg" alt="CI - Rust">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td><strong>Meta</strong></td>
+    <td>
+      <a href="https://www.rust-lang.org/">
+        <img src="https://img.shields.io/badge/Rust-Stable-orange.svg" alt="Rust">
+      </a>
+      <a href="https://www.postgresql.org/">
+        <img src="https://img.shields.io/badge/PostgreSQL-16-blue.svg" alt="PostgreSQL">
+      </a>
+      <a href="https://www.docker.com/">
+        <img src="https://img.shields.io/badge/Docker-Enabled-blue.svg" alt="Docker">
+      </a>
+      <a href="https://spdx.org/licenses/">
+        <img src="https://img.shields.io/badge/license-MIT-9400d3.svg" alt="License - MIT">
+      </a>
+      <a href="https://rust-reportcard.xuri.me/report/github/mohammadzainabbas/fizyr-assessment">
+        <img src="https://rust-reportcard.xuri.me/badge/github.com/mohammadzainabbas/fizyr-assessment" alt="Rust Report Card">
+      </a>
+    </td>
+  </tr>
+</table>
 
-- Rust (latest stable version)
-- Docker and Docker Compose
-- PostgreSQL (or use the provided Docker container)
-- OpenAQ API key (set as OPENAQ_KEY environment variable)
+</div>
 
-## Setup
+> [!IMPORTANT]
+> This repository contains the full implementation of the Air Quality Analysis CLI tool.
+>
+> **Key features:**
+>
+> - [x] Fetches air quality data from OpenAQ API v3 for specified countries.
+> - [x] Stores normalized data in a PostgreSQL database.
+> - [x] Interactive CLI menu for user operations.
+> - [x] Database schema initialization.
+> - [x] Data import functionality with configurable history duration.
+> - [x] Query: Find the most polluted country (NL, DE, FR, GR, ES, PK) based on recent PM2.5/PM10.
+> - [x] Query: Calculate 5-day average air quality for a specified country.
+> - [x] Query: Retrieve latest measurements grouped by city for a specified country.
+> - [x] Docker integration (`Dockerfile`, `docker-compose.yml`) for application and database.
+> - [x] GitHub Actions workflow for CI checks (`cargo check`, `cargo fmt -- --check`).
+> - [x] Basic unit and integration tests.
+> - [x] Logging to `logs/app.log`.
 
-### Environment Variables
+#
 
-Create a `.env` file in the project root with the following:
+## Project Structure
 
-```
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/air_quality
-OPENAQ_KEY=your_openaq_api_key
-RUST_LOG=info
-```
+- [**`src/`**](src/) – Rust source code for the CLI application.
+  - [`main.rs`](src/main.rs) - Main application entry point, sets up logging and runs the interactive loop.
+  - [`api/`](src/api/) - Modules for interacting with external APIs (OpenAQ).
+    - [`openaq.rs`](src/api/openaq.rs) - Client for fetching data from the OpenAQ API.
+    - [`mock.rs`](src/api/mock.rs) - Provides mock data for fallback scenarios.
+  - [`cli/`](src/cli/) - Modules related to the command-line interface.
+    - [`commands.rs`](src/cli/commands.rs) - Defines CLI commands and handles user interaction/prompts.
+  - [`db/`](src/db/) - Modules for database interaction.
+    - [`postgres.rs`](src/db/postgres.rs) - Handles PostgreSQL connection, schema initialization, and data querying/insertion.
+  - [`models/`](src/models/) - Data structures and models used throughout the application.
+    - [`openaq.rs`](src/models/openaq.rs) - Structs representing data fetched from OpenAQ and stored in the DB.
+  - [`error.rs`](src/error.rs) - Defines custom error types for the application.
+- [`tests/`](tests/) - Contains integration or end-to-end tests (if any). *Note: Current integration tests are within `src/db/postgres.rs`.*
+- [`logs/`](logs/) - Directory where application logs (`app.log`) are stored (created automatically).
+- [`Dockerfile`](Dockerfile) - Multi-stage Dockerfile for building an optimized application image.
+- [`docker-compose.yml`](docker-compose.yml) - Docker Compose file to orchestrate the application and database services.
+- [**`.github/workflows/`**](.github/workflows/) – GitHub Actions CI pipeline.
+  - `ci.yml` - Runs `cargo check`, `cargo fmt -- --check`.
+- [`Cargo.toml`](Cargo.toml) - Rust project manifest file.
+- [`rustfmt.toml`](rustfmt.toml) - Configuration for code formatting.
+- [`LICENSE`](LICENSE) - Project license file (MIT).
+- [`README.md`](README.md) - This file.
 
-### Running with Docker Compose
+#
 
-The easiest way to run the application is using Docker Compose:
+## Getting Started
 
-```bash
-docker-compose up
-```
+### Prerequisites
 
-This will:
-1. Start a PostgreSQL database using a named volume (`postgres_data`) for persistence.
-2. Build and run the application.
-3. Import the last 5 days of air quality data by default.
+- **Docker & Docker Compose:** Required for running the application and database via containers. [Install Docker](https://docs.docker.com/get-docker/), [Install Docker Compose](https://docs.docker.com/compose/install/).
+- **OpenAQ API Key:** Needed to fetch real data. Sign up at [OpenAQ](https://openaq.org/) and obtain an API key.
+- **Rust Toolchain:** Required for local development and building. [Install Rust](https://www.rust-lang.org/tools/install).
 
-To stop the services and remove the containers, networks, and the database volume (clearing all stored data), run:
+### Running with Docker Compose (Recommended)
 
-```bash
-docker-compose down -v
-```
+This is the easiest way to run the application and its database dependency.
 
-If you only want to stop the containers without removing the volume, use `docker-compose down`.
-
-### Manual Setup
-
-1.  **Build the application:**
+1.  **Clone the repository:**
     ```bash
-    cargo build
+    git clone <repository_url> # Replace with the actual URL
+    cd fizyr-assessment
     ```
-2.  **Run the interactive application:**
+
+2.  **Set Environment Variable:**
+    You need to provide your OpenAQ API key. The application expects it in the `OPENAQ_KEY` environment variable. You can either:
+    *   Export it in your shell: `export OPENAQ_KEY='your_api_key'`
+    *   Create a `.env` file in the project root:
+        ```dotenv
+        # .env
+        OPENAQ_KEY=your_api_key
+        ```
+        *Note: `docker-compose.yml` is configured to pass this variable to the `app` container.*
+
+3.  **Start Database Service:**
+    Run the database container in the background. It uses a named volume (`postgres_data`) for persistence.
     ```bash
+    docker-compose up -d database
+    ```
+    Wait a few seconds for the database to initialize.
+
+4.  **Run Application Interactively:**
+    Use `docker-compose run` to start the application container interactively. This connects to the running database. The `--rm` flag removes the container on exit.
+    ```bash
+    docker-compose run --rm --build app
+    ```
+    You should see the welcome message and the interactive menu. Use your keyboard to navigate and select options.
+
+    *Why `run` instead of `up app`?* While `docker-compose up app` is typically used for foreground services, interaction issues were observed on some systems. `docker-compose run` provides a more reliable interactive experience in this case, connecting to the persistent database started in the previous step.
+
+5.  **Using the CLI:**
+    Follow the prompts in the interactive menu:
+    *   **Initialize Database Schema:** Run this first to create the necessary table.
+    *   **Import Data:** Fetch data from OpenAQ for a specified number of days.
+    *   **Query Options:** Explore the available analysis features.
+
+6.  **Stopping Services:**
+    *   To stop the interactive `app` container, exit the application via its menu or press `Ctrl+C`.
+    *   To stop the background database container:
+        ```bash
+        docker-compose down
+        ```
+    *   To stop the database and *remove its data volume*:
+        ```bash
+        docker-compose down -v
+        ```
+
+### Local Development Setup
+
+1.  **Setup Environment:**
+    *   Ensure PostgreSQL is installed and running.
+    *   Create the database (e.g., `createdb air_quality`).
+    *   Set environment variables (either export or use a `.env` file):
+        ```dotenv
+        # .env
+        DATABASE_URL=postgres://your_user:your_password@localhost:5432/air_quality # Adjust connection string
+        OPENAQ_KEY=your_api_key
+        RUST_LOG=info # Optional: Adjust log level (e.g., debug, trace)
+        ```
+
+2.  **Build & Run:**
+    ```bash
+    # Build the project
+    cargo build
+
+    # Run the interactive application
     cargo run
     ```
 
-## Usage
+3.  **Run Tests:**
+    *   **Unit Tests:** (Currently minimal, primarily integration tests exist)
+        ```bash
+        cargo test
+        ```
+    *   **Database Integration Tests:** These tests require a running database configured via `DATABASE_URL`. They are marked with `#[cfg(feature = "integration-tests")]` and use the `sqlx::test` macro.
+        ```bash
+        # 1. Start the database service (if not already running)
+        docker-compose up -d database
 
-Run the application using `cargo run`. You will be presented with an interactive menu:
+        # 2. Run the integration tests using the feature flag
+        cargo test --features integration-tests
 
-```
-Welcome to the Air Quality Analysis CLI!
-? What would you like to do? ›
-  Initialize Database Schema
-  Exit
-```
+        # 3. Stop the database service when done
+        docker-compose down
+        ```
 
-The available options will change based on the application's state (whether the database is initialized and data has been imported).
+#
 
-**Available Actions:**
+## Implementation Overview
 
-1.  **Initialize Database Schema:** Creates the necessary `measurements` table and indexes in the PostgreSQL database. If run again, it ensures the schema exists. (See [Database Schema](#database-schema) section for details).
-2.  **Import Data:** Prompts for the number of past days to fetch data for (minimum 7 days, maximum 365 days). It fetches data for the predefined countries (Netherlands, Germany, France, Greece, Spain, Pakistan) from the OpenAQ API and stores it in the database. Uses mock data as a fallback if the API request fails.
+### Core Logic
 
-    *Example:* Importing data for the last 365 days:
-    ```
-    ✔ What would you like to do? · Import Data
+The application fetches air quality measurements from the OpenAQ API for a predefined list of countries (NL, DE, FR, GR, ES, PK). The data includes parameters like PM2.5, PM10, O3, etc., along with location details and timestamps.
 
-    ---
+Fetched data is stored in a PostgreSQL database (`measurements` table). The CLI provides an interactive menu allowing users to:
+1.  Initialize the database schema.
+2.  Import historical data for a specified period.
+3.  Perform analysis queries on the stored data.
 
-    ✔ Enter number of days for history (min 7, max 365) · 365
-    Importing data for the last 365 days
-      [00:00:01] [########################################] 12/12 (100%) Data import completed successfully!
-    ```
-    *Manual Verification (Date Range):* To check the date range of the imported data, connect to the database using `psql` (see [Manual Verification](#manual-verification) under Database Schema) and run:
-    ```sql
-    SELECT
-        MIN(date_utc) AS earliest_date,
-        MAX(date_utc) AS latest_date,
-        (MAX(date_utc)::date - MIN(date_utc)::date) AS days_span
-    FROM
-        measurements;
-    ```
-    This query shows the earliest and latest timestamps and calculates the number of days spanned by the data.
+### Database Schema
 
-3.  **Find Most Polluted Country:** Analyzes recent data (last 7 days) for PM2.5 and PM10 across the predefined countries (Netherlands, Germany, France, Greece, Spain, Pakistan) and displays the country (full name and code) with the highest calculated pollution index.
-4.  **Calculate Average Air Quality:** Prompts for a country (selecting from a list showing full names and codes). Calculates and displays the 5-day average values for various pollutants (PM2.5, PM10, O3, NO2, SO2, CO) for that country. Displays the full country name and code in the output.
-5.  **Get Measurements by City:** Prompts for a country (selecting from a list showing full names and codes). Displays a table showing the latest measurement value for each pollutant, grouped by city, within that country. Displays the full country name and code in the output header.
-6.  **Exit:** Terminates the application.
+A single table `measurements` stores the data. Key columns include location details, parameter, value, unit, timestamps (UTC and local), and coordinates. Indexes are created on `country`, `parameter`, and `date_utc` to optimize query performance. Schema initialization is handled by the `init_schema` function in `src/db/postgres.rs`, triggered via the CLI menu.
 
-## Database Schema
+### API Interaction
 
-The application uses a PostgreSQL database to store air quality measurements.
+The `src/api/openaq.rs` module uses the `reqwest` library to interact with the OpenAQ API v3 `/measurements` endpoint. It handles pagination and rate limiting (basic delay). Mock data is provided in `src/api/mock.rs` as a fallback if API calls fail.
 
-### Initialization
+### CLI Interface
 
-The database schema can be initialized using the interactive CLI. When you run the application (`cargo run`), select the "Initialize Database Schema" option:
+The `dialoguer` crate provides the interactive menu. The `clap` crate (though primarily used for parsing here via `Commands` enum) structures the available actions. State management (`AppState` in `src/cli/commands.rs`) dynamically adjusts the menu options based on whether the schema is initialized and data is imported.
 
-```
-Welcome to the Air Quality Analysis CLI!
-✔ What would you like to do? · Initialize Database Schema
+#
 
----
+## Development Decisions & Design Choices
 
-Initializing database schema...
-⠏ Database schema initialized successfully!
----
-```
+- **Language Choice (Rust):** Chosen for its performance, safety features, and strong ecosystem for CLI tools and web services, aligning with requirements for robust data pipeline components.
+- **Database (PostgreSQL):** A powerful open-source relational database suitable for structured data and complex queries.
+- **Containerization (Docker):** Ensures a consistent environment for development and deployment, simplifying setup. Multi-stage builds optimize the final image size.
+- **API Client (`reqwest`):** A popular and ergonomic HTTP client for Rust.
+- **CLI Interaction (`dialoguer`):** Provides a user-friendly interactive menu experience.
+- **Error Handling:** Custom error types (`AppError` in `src/error.rs`) provide specific contexts for failures (API, DB, IO, etc.). `thiserror` crate is used for boilerplate implementation.
+- **Modularity:** Code is organized into modules (`api`, `cli`, `db`, `models`) for better separation of concerns.
+- **Testing:** Includes basic unit tests and database integration tests (gated by the `integration-tests` feature flag and using the `sqlx::test` macro for automatic transaction management and database setup/teardown).
+- **Data Import Strategy:** Data is fetched per country and parameter to handle potential API limitations and allow for incremental updates (though current implementation fetches all requested days at once). `ON CONFLICT DO NOTHING` is used during insertion to handle potential duplicate measurements gracefully.
+- **Pollution Index Calculation:** A simple weighted index (`pm2.5 * 1.5 + pm10`) is used for the "most polluted" calculation, prioritizing PM2.5 based on common health impact assessments.
 
-This command creates the `measurements` table if it doesn't exist.
+#
 
-### `measurements` Table Structure
+## Future Improvements
 
-The schema consists of a single table named `measurements` with the following structure:
+- **More Sophisticated Error Handling:** Implement more robust retry logic for API calls with exponential backoff.
+- **Configuration File:** Move settings like country list, API base URL, database connection details etc., to a configuration file (e.g., TOML) instead of relying solely on environment variables or hardcoding.
+- **Advanced Database Features:** Explore partitioning or more complex indexing for very large datasets if performance becomes an issue.
+- **Asynchronous Data Ingestion:** Implement background tasks or a separate service for continuous data fetching and updates.
+- **Expanded CLI Options:** Add command-line flags for non-interactive use (e.g., `air-quality-cli import --days 30`), filtering options for queries (e.g., specific parameters, date ranges).
+- **Enhanced Testing:** Increase unit test coverage, add end-to-end tests simulating user interaction via the CLI.
+- **Deployment Strategy:** Document steps for deploying the application (e.g., as a standalone binary, container in a cloud environment).
 
-| Column Name | Data Type                 | Nullable | Description                                      |
-|-------------|---------------------------|----------|--------------------------------------------------|
-| id          | integer                   | NO       | Primary key (auto-incrementing)                  |
-| location_id | bigint                    | NO       | OpenAQ location ID                               |
-| location    | text                      | NO       | OpenAQ location name                             |
-| parameter   | text                      | NO       | Pollutant parameter (e.g., 'pm25', 'o3')         |
-| value       | numeric                   | NO       | Measured value                                   |
-| unit        | text                      | NO       | Unit of measurement (e.g., 'µg/m³')              |
-| date_utc    | timestamp with time zone  | NO       | Measurement timestamp in UTC                     |
-| date_local  | text                      | NO       | Measurement timestamp in local time (ISO format) |
-| country     | text                      | NO       | Country code (e.g., 'NL', 'DE')                  |
-| city        | text                      | YES      | City name                                        |
-| latitude    | double precision          | YES      | Latitude coordinate                              |
-| longitude   | double precision          | YES      | Longitude coordinate                             |
-| created_at  | timestamp with time zone  | NO       | Timestamp when the record was inserted           |
-
-*Note: The `id` column is managed by a sequence (`measurements_id_seq`), and there is an index on `(location_id, parameter, date_utc)` for efficient querying.*
-
-### Manual Verification
-
-You can manually verify the schema using `psql`. First, connect to the database (ensure your `DATABASE_URL` in `.env` is correct):
-
-```bash
-# Example using the default connection string
-psql postgres://postgres:postgres@localhost:5432/air_quality
-```
-
-Then, run the following SQL query to inspect the `measurements` table structure:
-
-```sql
-SELECT
-    column_name,
-    data_type,
-    is_nullable
-FROM
-    information_schema.columns
-WHERE
-    table_schema = 'public' AND table_name = 'measurements'
-ORDER BY
-    ordinal_position;
-```
-
-Alternatively, you can use the `psql` shortcut command:
-
-```sql
-\d measurements
-```
-
-This will display the table definition, including columns, types, indexes, and constraints.
-
-## Development
-
-### Running Tests
-
-Run the unit tests (excluding database integration tests):
-```bash
-cargo test
-```
-
-To run the database integration tests (located in `src/db/postgres.rs`), you need a running PostgreSQL instance accessible via the `DATABASE_URL` in your `.env` file. You can start the database using Docker Compose:
-```bash
-# Start only the database service in the background
-docker-compose up -d db
-```
-Then, run the ignored tests specifically:
-```bash
-cargo test -- --ignored
-```
-Remember to stop the database container when finished:
-```bash
-docker-compose down
-```
-
-### Formatting Code
-
-```bash
-cargo fmt
-```
-
-### Running Lints
-
-```bash
-cargo clippy
-```
-
-## Docker
-
-The project includes a multi-stage Docker build for efficient containerization. The Dockerfile creates a slim runtime image with only the necessary dependencies.
-
-## GitHub Actions
-
-The repository includes a GitHub Actions workflow that runs:
-- `cargo check`
-- `cargo fmt -- --check`
-- `cargo clippy`
-
-This ensures code quality on every push and pull request.
+#
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

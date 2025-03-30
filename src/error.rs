@@ -1,24 +1,24 @@
-//! Defines the custom error type `AppError` for the application and a `Result` alias.
+//! Defines the application's primary error type `AppError` and a convenience `Result` alias.
 //!
-//! Uses `thiserror` for convenient error definition and provides `From` implementations
-//! for common error types encountered in the application, wrapping them in `Arc`
-//! where necessary to allow cloning (e.g., for error handling in async contexts).
+//! Uses the `thiserror` crate for ergonomic error definition and provides `From`
+//! implementations to convert common external errors into `AppError` variants.
+//! Errors that do not implement `Clone` are wrapped in `Arc` to allow `AppError` to be cloneable.
 
 use std::sync::Arc;
 use thiserror::Error;
 
-/// The primary error type for the application.
+/// The primary error enumeration for all application-specific errors.
 #[derive(Error, Debug, Clone)]
 pub enum AppError {
-    /// Error originating from the OpenAQ API client (reqwest).
+    /// Error originating from the OpenAQ API client (`reqwest`).
     #[error("API Error: {0}")]
     Api(Arc<reqwest::Error>),
 
-    /// Error originating from database operations (sqlx).
+    /// Error originating from database operations (`sqlx`).
     #[error("Database Error: {0}")]
     Db(Arc<sqlx::Error>),
 
-    /// Error related to environment variable access.
+    /// Error related to accessing environment variables.
     #[error("Environment Error: {0}")]
     Env(#[from] std::env::VarError),
 
@@ -26,24 +26,25 @@ pub enum AppError {
     #[error("I/O Error: {0}")]
     Io(Arc<std::io::Error>),
 
-    /// Error specific to CLI argument parsing or command logic.
+    /// Error specific to CLI logic or argument handling.
     #[error("CLI Error: {0}")]
     Cli(String),
 
-    /// Error originating from user interaction prompts (dialoguer).
+    /// Error originating from user interaction prompts (`dialoguer`).
     #[error("Dialoguer Error: {0}")]
     Dialoguer(Arc<dialoguer::Error>),
 
-    /// Error related to progress bar style templating (indicatif).
+    /// Error related to progress bar style templating (`indicatif`).
     #[error("Progress Style Template Error: {0}")]
     Template(Arc<indicatif::style::TemplateError>),
 }
 
-/// A specialized `Result` type for the application, using `AppError`.
+/// A specialized `Result` type using the application's `AppError`.
 pub type Result<T> = std::result::Result<T, AppError>;
 
-// From implementations to convert underlying errors into AppError variants.
-// Arc is used for error types that don't implement Clone themselves.
+// --- From implementations ---
+// These allow easy conversion from external error types into AppError
+// using the `?` operator. Arc is used for non-Clone error types.
 
 impl From<reqwest::Error> for AppError {
     fn from(err: reqwest::Error) -> Self {
