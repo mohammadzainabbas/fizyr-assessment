@@ -13,7 +13,6 @@
   <tr>
     <td><strong>CI</strong></td>
     <td>
-      <!-- Placeholder for actual CI badge if available -->
       <a href="https://github.com/mohammadzainabbas/fizyr-assessment/actions/workflows/ci-rust.yml">
         <img src="https://github.com/mohammadzainabbas/fizyr-assessment/actions/workflows/ci-rust.yml/badge.svg" alt="CI - Rust">
       </a>
@@ -54,7 +53,7 @@
 > - [x] Query: Find the most polluted country based on recent PM2.5/PM10.
 > - [x] Query: Calculate 5-day average air quality for a specified country.
 > - [x] Query: Retrieve latest measurements grouped by locality for a specified country.
-> - [x] Docker integration (`Dockerfile`, `docker-compose.yml`) for easy setup.
+> - [x] Docker integration (`Dockerfile`, `docker-compose.yml`) for easy setup, including a custom network.
 > - [x] GitHub Actions workflow for CI checks (`cargo check`, `cargo fmt -- --check`).
 > - [x] Unit tests for CLI logic and integration tests for database operations.
 > - [x] Logging to `logs/app.log`.
@@ -77,7 +76,7 @@
   - [`error.rs`](src/error.rs) - Custom application error types (`AppError`).
 - [`logs/`](logs/) - Directory for application logs (created automatically).
 - [`Dockerfile`](Dockerfile) - Defines the container image build process.
-- [`docker-compose.yml`](docker-compose.yml) - Orchestrates the `app` and `database` services.
+- [`docker-compose.yml`](docker-compose.yml) - Orchestrates the `app` and `database` services using a custom network.
 - [**`.github/workflows/`**](.github/workflows/) – GitHub Actions CI pipeline (`ci-rust.yml`).
 - [`Cargo.toml`](Cargo.toml) & [`Cargo.lock`](Cargo.lock) - Rust project dependencies.
 - [`rustfmt.toml`](rustfmt.toml) - Code formatting configuration.
@@ -99,7 +98,7 @@
 
 ### Running with Docker Compose (Recommended Workflow)
 
-This method ensures the application runs in a consistent environment with its database dependency.
+This method ensures the application runs in a consistent environment with its database dependency on a dedicated network.
 
 1.  **Clone the Repository:**
 
@@ -113,18 +112,19 @@ git clone https://github.com/mohammadzainabbas/fizyr-assessment.git
 cd fizyr-assessment
 ```
 
-2.  **Configure API Key:**
+2.  **Configure API Key (Recommended: Use `.env` file):**
 
 > [!IMPORTANT]
-> The application requires your OpenAQ API key via the `OPENAQ_KEY` environment variable.
-Create a `.env` file in the project root:
+> The application requires your OpenAQ API key. The recommended way to provide it is via an `.env` file in the project root.
+
+Create a file named `.env`:
 
 ```dotenv
 # .env
 OPENAQ_KEY=your_actual_api_key_here
 ```
 
-The `docker-compose.yml` file is configured to pass this variable to the `app` container.
+The `docker-compose.yml` file is configured to read this file and pass the `OPENAQ_KEY` variable to the `app` container. Alternatively, you can export `OPENAQ_KEY` in your shell environment before running Docker Compose.
 
 3.  **Start Database Service:**
 
@@ -135,21 +135,21 @@ docker-compose up -d database
 ```
 
 > [!TIP]
-> Allow a few seconds for the database container to initialize fully before proceeding.
+> Allow a few seconds for the database container to initialize fully before proceeding. You can check logs with `docker-compose logs -f database`.
 
 4.  **Run Application Interactively:**
 
-Use `docker-compose run` to start the application interactively. This command creates a temporary container for the `app` service, connects it to the running `database` service, and attaches your terminal.
+Use `docker-compose run` to build (if needed) and start the application interactively. This command creates a temporary container for the `app` service, connects it to the running `database` service on the shared network, and attaches your terminal.
 
 ```bash
 docker-compose run --rm --build app
 ```
 
 - `--rm`: Automatically removes the container when the application exits.
-- `--build`: Rebuilds the application image if necessary.
+- `--build`: Rebuilds the application image if source code or `Dockerfile` changes.
 
 > [!NOTE]
-> You should see the welcome message and the interactive menu. Use your keyboard (arrow keys, Enter) to navigate. This `run` command is recommended over `docker-compose up app` due to potential TTY interaction issues observed with the latter on some systems.
+> You should see the welcome message and the interactive menu. Use your keyboard (arrow keys, Enter) to navigate. Using `docker-compose run` is generally preferred for interactive CLI applications like this over `docker-compose up app`, as it often handles terminal interactions (TTY) more reliably.
 
 5.  **Using the CLI:**
 
@@ -180,7 +180,7 @@ If you prefer to run outside Docker:
 1.  **Setup Environment:**
 *   Install and run PostgreSQL locally.
 *   Create a database (e.g., `createdb air_quality`).
-*   Set environment variables (export in your shell or use a `.env` file):
+*   Set environment variables (export in your shell or use a `.env` file and a tool like `dotenv-cli`):
 
 ```dotenv
 # .env (Example - Adjust DATABASE_URL for your local setup)
@@ -195,7 +195,9 @@ RUST_LOG=info # Optional: Set log level (e.g., debug, trace)
 # Build the project
 cargo build
 
-# Run the interactive application (make sure that the database is running first)
+# Run the interactive application (make sure the database is running first)
+# If using .env, you might need a tool like dotenv-cli:
+# dotenv cargo run
 cargo run
 ```
 
@@ -212,16 +214,19 @@ cargo test
 ```
 *   **Database Integration Tests:** (Located in `src/db/postgres.rs`)
 > [!IMPORTANT]
-> These tests require a running PostgreSQL database accessible via the `DATABASE_URL` environment variable.
+> These tests require a running PostgreSQL database accessible via the `DATABASE_URL` environment variable. This can be your local instance or the Dockerized one.
+
 ```bash
-# 1. Ensure your local PostgreSQL or the Dockerized one is running:
-docker-compose up -d database
+# 1. Ensure a PostgreSQL database is running and accessible via DATABASE_URL.
+#    Example using Docker Compose:
+#    docker-compose up -d database
+#    export DATABASE_URL="postgres://postgres:postgres@localhost:5432/air_quality" # Set for local shell
 
 # 2. Run only the integration tests using the feature flag:
 cargo test --features integration-tests
 
-# 3. Stop the Dockerized database if you started it for the tests:
-docker-compose down
+# 3. Stop the Dockerized database if you started it just for the tests:
+#    docker-compose down
 ```
 
 #
@@ -275,7 +280,7 @@ The database uses three main tables:
 
 - **Language (Rust):** Chosen for performance, memory safety, strong typing, and its excellent ecosystem for CLI tools (`clap`, `dialoguer`, `indicatif`) and asynchronous operations (`tokio`, `reqwest`, `sqlx`).
 - **Database (PostgreSQL):** A robust, open-source relational database well-suited for structured time-series data and analytical queries. `sqlx` provides compile-time checked SQL queries.
-- **Containerization (Docker):** Simplifies setup and ensures environment consistency using `Dockerfile` (multi-stage build for smaller image) and `docker-compose.yml`.
+- **Containerization (Docker):** Simplifies setup and ensures environment consistency using `Dockerfile` (multi-stage build for smaller image) and `docker-compose.yml`. A custom network (`air_quality_net`) isolates the application and database services.
 - **API Client (`reqwest`):** A mature and widely used asynchronous HTTP client in the Rust ecosystem.
 - **Error Handling (`thiserror`, Custom Enum):** Centralized error handling using the `AppError` enum and `thiserror` provides clear, context-specific error types, improving debugging and robustness. `Arc` is used to wrap non-`Clone` errors.
 - **Modularity:** The codebase is organized into logical modules (`api`, `cli`, `db`, `models`, `error`) promoting separation of concerns and maintainability.
@@ -289,7 +294,7 @@ The database uses three main tables:
 
 ## Future Improvements
 
-- **Robust Error Handling:** Add retry logic (e.g., with exponential backoff) for transient network or API errors.
+- **Robust Error Handling:** Add more sophisticated retry logic (e.g., with exponential backoff) for transient network or API errors during import.
 - **Configuration File:** Move settings (country list, API URL, DB connection details) to a configuration file (e.g., `config.toml`) instead of environment variables or hardcoding.
 - **Database Migrations:** Use a dedicated migration tool (like `sqlx-cli` or `refinery`) for more robust schema management instead of `CREATE TABLE IF NOT EXISTS`.
 - **Non-Interactive Mode:** Add command-line flags (using `clap` more extensively) for running commands non-interactively (e.g., `air-quality-cli import --days 30`).

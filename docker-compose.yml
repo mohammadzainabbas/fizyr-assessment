@@ -2,34 +2,54 @@ services:
   database:
     image: postgres:16-alpine
     environment:
+      # Consider using a .env file for secrets
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_PASSWORD=postgres # TODO: Move to .env file
       - POSTGRES_DB=air_quality
     ports:
+      # Expose port 5432 for potential external access (e.g., DB client)
       - "5432:5432"
     volumes:
+      # Persist database data
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    # Ensure the database restarts automatically unless explicitly stopped
+    restart: unless-stopped
+    # Connect to the custom network
+    networks:
+      - air_quality_net
 
   app:
     build:
       context: .
       dockerfile: Dockerfile
     environment:
+      # Service name 'database' works because both services are on the same network
       - DATABASE_URL=postgres://postgres:postgres@database:5432/air_quality
       - RUST_LOG=info
       - OPENAQ_KEY=${OPENAQ_KEY} # Pass API key from host environment
     depends_on:
       database:
+        # Wait for the database to be healthy before starting the app
         condition: service_healthy
-    # Keep the container running and allow interaction
-    stdin_open: true # docker run -i
-    tty: true        # docker run -t
-    # Removed the default command to allow the interactive entrypoint to run
+    # Keep the container running and allow interaction via docker attach or docker exec
+    stdin_open: true # Equivalent to -i in docker run
+    tty: true        # Equivalent to -t in docker run
+    # Connect to the custom network
+    networks:
+      - air_quality_net
+    # Consider adding restart: unless-stopped if the app should also restart automatically
 
+# Define the volume for PostgreSQL data persistence
 volumes:
   postgres_data:
+    driver: local # Explicitly specify the driver (default is local)
+
+# Define the custom network
+networks:
+  air_quality_net:
+    driver: bridge # Use the standard bridge driver
