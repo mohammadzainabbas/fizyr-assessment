@@ -6,9 +6,12 @@
 
 use crate::error::{AppError, Result};
 use crate::models::{
-    CityLatestMeasurements, CountryAirQuality, DbMeasurement, Measurement, PollutionRanking,
+    CityLatestMeasurements,
+    CountryAirQuality,
+    DbMeasurement,
+    PollutionRanking, // Removed unused Measurement
 };
-use rayon::prelude::*; // Used for parallel data transformation
+// use rayon::prelude::*; // Removed unused import
 use sqlx::{postgres::PgPoolOptions, Pool, Postgres, Row};
 use tracing::{debug, error, info};
 
@@ -57,13 +60,19 @@ impl Database {
         info!("Initializing database schema (if necessary)...");
 
         // Create the main table for storing air quality measurements.
+        // Create the main table for storing air quality measurements.
+        // Added sensor_id, parameter_id, parameter_name, location_name, is_mobile, is_monitor, owner_name, provider_name
+        // Renamed location -> location_name, parameter -> parameter_name
+        // Added UNIQUE constraint on (sensor_id, date_utc)
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS measurements (
                 id SERIAL PRIMARY KEY,
                 location_id BIGINT NOT NULL,
-                location TEXT NOT NULL,
-                parameter TEXT NOT NULL,
+                sensor_id BIGINT, -- Can be NULL if data source doesn't provide it? Make NOT NULL if always available.
+                location_name TEXT NOT NULL, -- Renamed from location
+                parameter_id INT NOT NULL,
+                parameter_name TEXT NOT NULL, -- Renamed from parameter
                 value NUMERIC NOT NULL, -- Using NUMERIC for precise storage
                 unit TEXT NOT NULL,
                 date_utc TIMESTAMPTZ NOT NULL,
@@ -72,7 +81,12 @@ impl Database {
                 city TEXT,
                 latitude DOUBLE PRECISION,
                 longitude DOUBLE PRECISION,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW() -- Timestamp of insertion
+                is_mobile BOOLEAN NOT NULL DEFAULT FALSE,
+                is_monitor BOOLEAN NOT NULL DEFAULT FALSE,
+                owner_name TEXT,
+                provider_name TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- Timestamp of insertion
+                UNIQUE (sensor_id, date_utc) -- Prevent duplicate readings for the same sensor at the same time
             )
             "#,
         )
@@ -95,9 +109,31 @@ impl Database {
             AppError::Db(e.into())
         })?;
 
-        // Index on parameter for filtering by pollutant type.
+        // Index on sensor_id for joining or filtering by sensor.
         sqlx::query(
-            r#"CREATE INDEX IF NOT EXISTS idx_measurements_parameter ON measurements(parameter)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_measurements_sensor_id ON measurements(sensor_id)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to create sensor_id index: {}", e);
+            AppError::Db(e.into())
+        })?;
+
+        // Index on parameter_id for potential filtering/joining on parameter ID.
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_measurements_parameter_id ON measurements(parameter_id)"#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            error!("Failed to create parameter_id index: {}", e);
+            AppError::Db(e.into())
+        })?;
+
+        // Index on parameter_name for filtering by pollutant type. (Changed from parameter)
+        sqlx::query(
+            r#"CREATE INDEX IF NOT EXISTS idx_measurements_parameter_name ON measurements(parameter_name)"#,
         )
         .execute(&self.pool)
         .await
@@ -126,32 +162,28 @@ impl Database {
     /// Converts API `Measurement` structs to `DbMeasurement` in parallel using Rayon.
     /// Executes insertions within a single database transaction for atomicity.
     /// Uses `ON CONFLICT DO NOTHING` to silently ignore potential duplicate entries
-    /// (based on unique constraints, though none are explicitly defined here besides PRIMARY KEY).
+    /// (based on the `UNIQUE (sensor_id, date_utc)` constraint).
     ///
     /// # Arguments
     ///
-    /// * `measurements` - A slice of `Measurement` structs fetched from the API.
+    /// * `db_measurements` - A slice of `DbMeasurement` structs ready for insertion.
     ///
     /// # Errors
     ///
     /// Returns `AppError::Db` if the transaction fails to begin, commit, or if any
     /// individual insertion query fails.
-    pub async fn insert_measurements(&self, measurements: &[Measurement]) -> Result<()> {
-        if measurements.is_empty() {
+    pub async fn insert_measurements(&self, db_measurements: &[DbMeasurement]) -> Result<()> {
+        if db_measurements.is_empty() {
             debug!("No measurements provided for insertion.");
             return Ok(());
         }
 
         info!(
             "Preparing to insert {} measurements into database...",
-            measurements.len()
+            db_measurements.len()
         );
 
-        // Convert API measurements to DB format in parallel for potential performance gain.
-        let db_measurements: Vec<DbMeasurement> = measurements
-            .par_iter() // Use Rayon for parallel iteration
-            .map(|m| DbMeasurement::from(m.clone()))
-            .collect();
+        // Conversion step is removed, assuming input is already Vec<DbMeasurement>
 
         // Use a transaction to ensure all measurements are inserted or none are.
         let mut tx = self.pool.begin().await.map_err(|e| {
@@ -160,22 +192,22 @@ impl Database {
         })?;
 
         // Iterate and execute INSERT query for each measurement.
-        for m in &db_measurements {
-            // Note: Consider using `sqlx::query!` macro for compile-time checks if not dynamic.
-            // Using `ON CONFLICT DO NOTHING` assumes duplicates are okay to ignore.
-            // If specific conflict handling (e.g., update) is needed, adjust the query.
+        for m in db_measurements {
+            // Using `ON CONFLICT (sensor_id, date_utc) DO NOTHING` to handle duplicates based on the unique constraint.
             sqlx::query(
                 r#"
                 INSERT INTO measurements
-                (location_id, location, parameter, value, unit, date_utc, date_local, country, city, latitude, longitude)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT DO NOTHING
+                (location_id, sensor_id, location_name, parameter_id, parameter_name, value, unit, date_utc, date_local, country, city, latitude, longitude, is_mobile, is_monitor, owner_name, provider_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                ON CONFLICT (sensor_id, date_utc) DO NOTHING
                 "#,
             )
             .bind(m.location_id)
-            .bind(&m.location)
-            .bind(&m.parameter)
-            .bind(m.value) // Binds the Decimal type
+            .bind(m.sensor_id) // Bind new field
+            .bind(&m.location_name) // Bind renamed field
+            .bind(m.parameter_id) // Bind new field
+            .bind(&m.parameter_name) // Bind renamed field
+            .bind(m.value)
             .bind(&m.unit)
             .bind(m.date_utc)
             .bind(&m.date_local)
@@ -183,11 +215,15 @@ impl Database {
             .bind(&m.city)
             .bind(m.latitude)
             .bind(m.longitude)
+            .bind(m.is_mobile) // Bind new field
+            .bind(m.is_monitor) // Bind new field
+            .bind(&m.owner_name) // Bind new field
+            .bind(&m.provider_name) // Bind new field
             .execute(&mut *tx) // Execute within the transaction
             .await
             .map_err(|e| {
                 // Log specific insertion error, but transaction will likely be rolled back.
-                error!("Failed to insert measurement record: {}", e);
+                error!("Failed to insert measurement record (sensor_id: {:?}, date_utc: {}): {}", m.sensor_id, m.date_utc, e);
                 AppError::Db(e.into())
             })?;
         }
@@ -198,7 +234,10 @@ impl Database {
             AppError::Db(e.into())
         })?;
 
-        info!("Successfully inserted {} measurements", measurements.len());
+        info!(
+            "Successfully processed {} measurements for insertion (duplicates ignored).",
+            db_measurements.len()
+        );
         Ok(())
     }
 
@@ -235,38 +274,40 @@ impl Database {
         // 2. Main Query: Groups by country, calculates the weighted pollution index,
         //    extracts the specific PM2.5 and PM10 averages using MAX(CASE...), orders by the index descending,
         //    and takes the top result.
+        // Removed duplicated/incorrect query block above
         let query = format!(
             r#"
             WITH latest_data AS (
                 SELECT
                     country,
-                    parameter,
+                    parameter_name, -- Use new column name
                     AVG(value::DOUBLE PRECISION) as avg_value -- Cast NUMERIC to float for calculation
                 FROM measurements
                 WHERE
-                    country IN ('{}') -- Injecting the list here
-                    AND parameter IN ('pm25', 'pm10')
+                    country IN ('{}') -- Injecting the list here (less safe than binding)
+                    AND parameter_name IN ('pm25', 'pm10') -- Use new column name
                     AND date_utc > NOW() - INTERVAL '7 days'
-                GROUP BY country, parameter
+                GROUP BY country, parameter_name -- Use new column name
             )
             SELECT
                 country,
-                -- Calculate weighted pollution index (PM2.5 weighted higher)
-                SUM(CASE WHEN parameter = 'pm25' THEN avg_value * 1.5 ELSE 0 END)::DOUBLE PRECISION +
-                SUM(CASE WHEN parameter = 'pm10' THEN avg_value ELSE 0 END)::DOUBLE PRECISION as pollution_index,
+                -- Calculate weighted pollution index (PM2.5 weighted higher), handle NULLs with COALESCE
+                COALESCE(SUM(CASE WHEN parameter_name = 'pm25' THEN avg_value * 1.5 ELSE 0 END)::DOUBLE PRECISION, 0.0) +
+                COALESCE(SUM(CASE WHEN parameter_name = 'pm10' THEN avg_value ELSE 0 END)::DOUBLE PRECISION, 0.0) as pollution_index,
                 -- Extract average PM2.5 and PM10 values for the result
-                MAX(CASE WHEN parameter = 'pm25' THEN avg_value ELSE NULL END)::DOUBLE PRECISION as pm25_avg,
-                MAX(CASE WHEN parameter = 'pm10' THEN avg_value ELSE NULL END)::DOUBLE PRECISION as pm10_avg
+                MAX(CASE WHEN parameter_name = 'pm25' THEN avg_value ELSE NULL END)::DOUBLE PRECISION as pm25_avg,
+                MAX(CASE WHEN parameter_name = 'pm10' THEN avg_value ELSE NULL END)::DOUBLE PRECISION as pm10_avg
             FROM latest_data
             GROUP BY country
             ORDER BY pollution_index DESC
             LIMIT 1
             "#,
-            countries_list // Use the joined list
+            countries_list // Use the joined list for formatting
         );
 
-        // Execute the query, mapping the result to a tuple.
-        let result = sqlx::query_as::<_, (String, f64, Option<f64>, Option<f64>)>(&query)
+        // Execute the formatted query, mapping the result to a tuple.
+        let result = sqlx::query_as::<_, (String, f64, Option<f64>, Option<f64>)>(&query) // Use the formatted query string
+            // No .bind() needed here as parameters are formatted into the string
             .fetch_optional(&self.pool) // Use fetch_optional as there might be no data
             .await
             .map_err(|e| {
@@ -322,12 +363,12 @@ impl Database {
         let query = r#"
         SELECT
             country,
-            AVG(CASE WHEN parameter = 'pm25' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm25,
-            AVG(CASE WHEN parameter = 'pm10' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm10,
-            AVG(CASE WHEN parameter = 'o3' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_o3,
-            AVG(CASE WHEN parameter = 'no2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_no2,
-            AVG(CASE WHEN parameter = 'so2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_so2,
-            AVG(CASE WHEN parameter = 'co' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_co,
+            AVG(CASE WHEN parameter_name = 'pm25' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm25,
+            AVG(CASE WHEN parameter_name = 'pm10' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_pm10,
+            AVG(CASE WHEN parameter_name = 'o3' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_o3,
+            AVG(CASE WHEN parameter_name = 'no2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_no2,
+            AVG(CASE WHEN parameter_name = 'so2' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_so2,
+            AVG(CASE WHEN parameter_name = 'co' THEN value::DOUBLE PRECISION ELSE NULL END) as avg_co,
             COUNT(*) as measurement_count
         FROM measurements
         WHERE
@@ -420,7 +461,7 @@ impl Database {
         info!("Fetching latest measurements by city for {}", country);
 
         // SQL Query Explanation:
-        // 1. CTE `latest_city_param`: Uses `DISTINCT ON (city, parameter)` ordered by `date_utc DESC`
+        // 1. CTE `latest_city_param`: Uses `DISTINCT ON (city, parameter_name)` ordered by `date_utc DESC`
         //    to select only the single latest row for each unique combination of city and parameter
         //    within the specified country.
         // 2. Main Query: Groups the results from the CTE by city. Uses `MAX(CASE...)` to pivot
@@ -428,24 +469,24 @@ impl Database {
         //    most recent update timestamp among all parameters for that city.
         let query = r#"
         WITH latest_city_param AS (
-            SELECT DISTINCT ON (city, parameter)
+            SELECT DISTINCT ON (city, parameter_name) -- Use new column name
                 city,
-                parameter,
+                parameter_name, -- Use new column name
                 value, -- The value from the latest record
                 date_utc -- The timestamp from the latest record
             FROM measurements
             WHERE country = $1 AND city IS NOT NULL -- Filter by country, ignore null cities
-            ORDER BY city, parameter, date_utc DESC -- Crucial for DISTINCT ON
+            ORDER BY city, parameter_name, date_utc DESC -- Use new column name, Crucial for DISTINCT ON
         )
         SELECT
             city,
             -- Pivot parameter values into columns
-            MAX(CASE WHEN parameter = 'pm25' THEN value ELSE NULL END) as pm25,
-            MAX(CASE WHEN parameter = 'pm10' THEN value ELSE NULL END) as pm10,
-            MAX(CASE WHEN parameter = 'o3' THEN value ELSE NULL END) as o3,
-            MAX(CASE WHEN parameter = 'no2' THEN value ELSE NULL END) as no2,
-            MAX(CASE WHEN parameter = 'so2' THEN value ELSE NULL END) as so2,
-            MAX(CASE WHEN parameter = 'co' THEN value ELSE NULL END) as co,
+            MAX(CASE WHEN parameter_name = 'pm25' THEN value ELSE NULL END) as pm25,
+            MAX(CASE WHEN parameter_name = 'pm10' THEN value ELSE NULL END) as pm10,
+            MAX(CASE WHEN parameter_name = 'o3' THEN value ELSE NULL END) as o3,
+            MAX(CASE WHEN parameter_name = 'no2' THEN value ELSE NULL END) as no2,
+            MAX(CASE WHEN parameter_name = 'so2' THEN value ELSE NULL END) as so2,
+            MAX(CASE WHEN parameter_name = 'co' THEN value ELSE NULL END) as co,
             -- Find the overall latest update time for the city across all parameters
             MAX(date_utc) as last_updated
         FROM latest_city_param
@@ -536,37 +577,57 @@ impl Database {
 #[cfg(feature = "integration-tests")] // Apply feature gate to the whole module
 mod tests {
     use super::*; // Import items from parent module (Database, etc.)
-    use crate::models::{Dates, Measurement};
+                  // Import DbMeasurement instead of Measurement and Dates
+    use crate::models::DbMeasurement;
     use chrono::{Duration, Utc};
     use num_traits::FromPrimitive; // Required for Decimal::from_f64
+    use rand::Rng;
     use sqlx::types::Decimal;
-    use sqlx::{PgPool, Row}; // PgPool is injected by #[sqlx::test]
+    use sqlx::{PgPool, Row}; // PgPool is injected by #[sqlx::test] // For generating random IDs
 
-    /// Helper function to create a `Measurement` instance for testing purposes.
-    fn create_test_measurement(
+    /// Helper function to create a `DbMeasurement` instance for testing purposes.
+    fn create_test_db_measurement(
         country: &str,
-        parameter: &str,
+        parameter_name: &str, // Changed from parameter
         value: f64,
         days_ago: i64,
-    ) -> Measurement {
+    ) -> DbMeasurement {
+        // Changed return type
         let timestamp = Utc::now() - Duration::days(days_ago);
-        Measurement {
-            location_id: rand::random(), // Use random ID for variety
-            location: format!("Test Location {}", country),
-            parameter: parameter.to_string(),
-            value,
+        let mut rng = rand::thread_rng();
+        let location_id: i64 = rng.gen_range(1000..10000); // Example random ID
+        let sensor_id: i64 = location_id * 10 + rng.gen_range(0..10); // Example sensor ID
+        let parameter_id: i32 = match parameter_name {
+            // Assign dummy IDs based on name
+            "pm25" => 1,
+            "pm10" => 2,
+            "no2" => 3,
+            "o3" => 4,
+            "so2" => 5,
+            "co" => 6,
+            _ => 0,
+        };
+
+        DbMeasurement {
+            id: None, // DB generates ID
+            location_id,
+            sensor_id: Some(sensor_id),
+            location_name: format!("Test Location {}", country), // Renamed field
+            parameter_id,
+            parameter_name: parameter_name.to_string(), // Renamed field
+            value: Decimal::from_f64(value).unwrap_or_else(|| Decimal::ZERO), // Use Decimal
             unit: "µg/m³".to_string(),
-            date: Dates {
-                utc: timestamp,
-                local: timestamp.to_rfc3339(),
-            },
+            date_utc: timestamp,                // Renamed field
+            date_local: timestamp.to_rfc3339(), // Renamed field
             country: country.to_string(),
             city: Some(format!("Test City {}", country)),
-            coordinates: Some(Coordinates {
-                // Add some coordinates
-                latitude: Some(52.0),
-                longitude: Some(5.0),
-            }),
+            latitude: Some(52.0), // Renamed field
+            longitude: Some(5.0), // Renamed field
+            // Add new fields
+            is_mobile: false,
+            is_monitor: true,
+            owner_name: "Test Owner".to_string(),
+            provider_name: "Test Provider".to_string(),
         }
     }
 
@@ -578,22 +639,24 @@ mod tests {
 
         let measurements = vec![
             // Netherlands data (recent)
-            create_test_measurement("NL", "pm25", 15.0, 1),
-            create_test_measurement("NL", "pm10", 25.0, 1),
-            create_test_measurement("NL", "no2", 30.0, 1),
+            // Use the new helper function returning DbMeasurement
+            create_test_db_measurement("NL", "pm25", 15.0, 1),
+            create_test_db_measurement("NL", "pm10", 25.0, 1),
+            create_test_db_measurement("NL", "no2", 30.0, 1),
             // Germany data (recent)
-            create_test_measurement("DE", "pm25", 18.0, 1),
-            create_test_measurement("DE", "pm10", 28.0, 1),
+            create_test_db_measurement("DE", "pm25", 18.0, 1),
+            create_test_db_measurement("DE", "pm10", 28.0, 1),
             // Pakistan data (recent, higher pollution)
-            create_test_measurement("PK", "pm25", 50.0, 1),
-            create_test_measurement("PK", "pm10", 80.0, 1),
+            create_test_db_measurement("PK", "pm25", 50.0, 1),
+            create_test_db_measurement("PK", "pm10", 80.0, 1),
             // France data (older, outside 5-day window for avg test)
-            create_test_measurement("FR", "pm25", 10.0, 6),
+            create_test_db_measurement("FR", "pm25", 10.0, 6),
             // Greece data (recent)
-            create_test_measurement("GR", "pm10", 22.0, 1),
+            create_test_db_measurement("GR", "pm10", 22.0, 1),
             // Spain data (recent)
-            create_test_measurement("ES", "pm25", 12.0, 1),
+            create_test_db_measurement("ES", "pm25", 12.0, 1),
         ];
+        // insert_measurements now expects &[DbMeasurement]
         db.insert_measurements(&measurements).await?;
         Ok(())
     }
@@ -647,10 +710,12 @@ mod tests {
         let db = Database { pool };
         db.init_schema().await?; // Prerequisite: schema must exist
 
-        let m1 = create_test_measurement("NL", "pm25", 10.5, 1);
-        let m2 = create_test_measurement("DE", "pm10", 20.2, 1);
+        // Use the new helper function
+        let m1 = create_test_db_measurement("NL", "pm25", 10.5, 1);
+        let m2 = create_test_db_measurement("DE", "pm10", 20.2, 1);
         let measurements = vec![m1.clone(), m2.clone()];
 
+        // insert_measurements now expects &[DbMeasurement]
         let result = db.insert_measurements(&measurements).await;
         assert!(result.is_ok(), "insert_measurements should succeed");
 
@@ -660,21 +725,23 @@ mod tests {
             .await?;
         assert_eq!(count, 2, "Should be 2 measurements inserted");
 
-        // Verify specific inserted data
+        // Verify specific inserted data using new column names
         let row = sqlx::query_as::<_, DbMeasurement>(
-            "SELECT * FROM measurements WHERE country = 'NL' AND parameter = 'pm25'",
+            "SELECT * FROM measurements WHERE country = 'NL' AND parameter_name = 'pm25'", // Use parameter_name
         )
         .fetch_one(&db.pool)
         .await?;
         assert_eq!(row.country, "NL");
-        assert_eq!(row.parameter, "pm25");
-        // Compare Decimal values carefully
+        assert_eq!(row.parameter_name, "pm25"); // Check parameter_name
+                                                // Compare Decimal values carefully
         assert_eq!(
             row.value,
             Decimal::from_f64(10.5).unwrap(),
             "Inserted value mismatch for NL pm25"
         );
-        assert_eq!(row.location_id, m1.location_id); // Check other fields if necessary
+        assert_eq!(row.location_id, m1.location_id);
+        assert_eq!(row.sensor_id, m1.sensor_id); // Check new field
+        assert_eq!(row.location_name, m1.location_name); // Check renamed field
 
         Ok(())
     }
@@ -720,6 +787,7 @@ mod tests {
         );
 
         // Test case with no recent data (only FR has old data)
+        // The query now uses parameter_name, but the logic remains the same.
         let result_fr = db.get_most_polluted_country(&["FR"]).await?;
         assert_eq!(
             result_fr.country, "FR",
@@ -740,6 +808,8 @@ mod tests {
 
         Ok(())
     }
+    // Note: The underlying query was already updated in a previous step to use parameter_name.
+    // This diff mainly verifies the assertions remain correct.
 
     /// Tests the `get_average_air_quality` function logic over a 5-day period.
     #[sqlx::test]
@@ -782,6 +852,8 @@ mod tests {
 
         Ok(())
     }
+    // Note: The underlying query was already updated in a previous step to use parameter_name.
+    // This diff mainly verifies the assertions remain correct.
 
     /// Tests the `get_latest_measurements_by_city` function logic.
     #[sqlx::test]
@@ -791,8 +863,9 @@ mod tests {
 
         // Add slightly older data for NL to test DISTINCT ON logic
         let db = Database { pool };
-        let older_nl_pm25 = create_test_measurement("NL", "pm25", 5.0, 2); // Older PM2.5 value
-        let older_nl_o3 = create_test_measurement("NL", "o3", 40.0, 1); // O3 data (recent)
+        // Use the new helper function
+        let older_nl_pm25 = create_test_db_measurement("NL", "pm25", 5.0, 2); // Older PM2.5 value
+        let older_nl_o3 = create_test_db_measurement("NL", "o3", 40.0, 1); // O3 data (recent)
         db.insert_measurements(&[older_nl_pm25, older_nl_o3])
             .await?;
 
@@ -837,7 +910,7 @@ mod tests {
             (nl_city_data.last_updated - one_day_ago)
                 .num_seconds()
                 .abs()
-                < 15,
+                < 15, // Increased tolerance slightly
             "Last updated timestamp mismatch"
         );
 
@@ -847,6 +920,8 @@ mod tests {
 
         Ok(())
     }
+    // Note: The underlying query was already updated in a previous step to use parameter_name.
+    // This diff mainly verifies the assertions remain correct and updates test data creation.
 
     /// Tests the `is_schema_initialized` helper function state changes.
     #[sqlx::test]

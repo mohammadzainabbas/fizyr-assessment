@@ -2,10 +2,11 @@
 //!
 //! Includes:
 //! - `openaq`: Client for the real OpenAQ API.
-//! - `mock`: A mock data provider used as a fallback or for testing.
+// Removed mock module description
 
-mod mock;
+// mod mock; // Removed mock module
 mod openaq;
+// Removed mock test module reference if it existed implicitly
 
-pub use mock::*;
+// pub use mock::*; // Removed mock re-export
 pub use openaq::*;

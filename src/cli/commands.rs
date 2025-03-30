@@ -5,10 +5,11 @@
 //! and user interface elements (prompts, tables, progress bars), managing the
 //! overall application flow based on user input and application state.
 
-use crate::api::{MockDataProvider, OpenAQClient};
+use crate::api::OpenAQClient;
 use crate::db::Database;
 use crate::error::{AppError, Result};
 // Removed unused model imports: CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking
+// Removed MockDataProvider import below
 use chrono::{Duration, Utc};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
@@ -94,8 +95,8 @@ pub struct MeasurementsArgs {
 pub struct App {
     db: Database,
     api_client: OpenAQClient,
-    mock_provider: MockDataProvider, // Used as fallback if API fails during import
-    state: Arc<Mutex<AppState>>,     // Shared, mutable state tracking DB/import status
+    // mock_provider: MockDataProvider, // Removed field
+    state: Arc<Mutex<AppState>>, // Shared, mutable state tracking DB/import status
 }
 
 impl App {
@@ -127,7 +128,7 @@ impl App {
 
         let db = Database::new(&database_url).await?;
         let api_client = OpenAQClient::new(api_key);
-        let mock_provider = MockDataProvider::new();
+        // let mock_provider = MockDataProvider::new(); // Removed initialization
 
         // Determine initial state by checking database
         let initial_state = if db.has_data_imported().await? {
@@ -142,7 +143,7 @@ impl App {
         Ok(Self {
             db,
             api_client,
-            mock_provider,
+            // mock_provider, // Removed field from initialization
             state: Arc::new(Mutex::new(initial_state)),
         })
     }
@@ -213,9 +214,11 @@ impl App {
 
     /// Imports data for the specified number of past days for all `COUNTRIES`.
     ///
-    /// Fetches data from the OpenAQ API. If an API request fails for a country,
-    /// it falls back to using the `MockDataProvider`. Data is then inserted into the database.
-    /// Displays progress using `indicatif`.
+    /// Imports data for the specified number of past days for all `COUNTRIES`.
+    ///
+    /// Fetches locations for each country, then fetches measurements for each sensor
+    /// at those locations using the OpenAQ v3 API. Data is then converted and
+    /// inserted into the database. Displays progress using `indicatif`.
     ///
     /// # Arguments
     ///
@@ -223,7 +226,7 @@ impl App {
     ///
     /// # Errors
     ///
-    /// Returns `AppError` if schema initialization, data fetching (including mock fallback),
+    /// Returns `AppError` if schema initialization, API fetching, data conversion,
     /// or database insertion fails.
     async fn import_data(&self, days: i64) -> Result<()> {
         println!(
@@ -231,8 +234,6 @@ impl App {
             "Importing data for the last".yellow(),
             format!("{} days", days).yellow().bold()
         );
-        let pb = Self::create_progress_bar((COUNTRIES.len() * 2) as u64); // 2 steps per country (fetch, insert)
-        pb.enable_steady_tick(StdDuration::from_millis(100));
 
         info!("Ensuring database schema exists before import...");
         self.db.init_schema().await?; // Idempotent schema initialization
@@ -241,62 +242,146 @@ impl App {
         let start_date = end_date - Duration::days(days);
         info!("Importing data from {} to {}", start_date, end_date);
 
-        for country in COUNTRIES.iter() {
-            let country_str = country.to_string();
-            pb.set_message(format!("Fetching data for {}...", country_str));
+        let mut all_db_measurements = Vec::new();
+        let total_countries = COUNTRIES.len();
+        let pb_outer = Self::create_progress_bar(total_countries as u64);
+        pb_outer.set_message("Fetching locations...");
 
-            // Attempt to fetch from API, fallback to mock data on error
-            let measurements = match self
+        for country_code in COUNTRIES.iter() {
+            pb_outer.set_message(format!("Processing {}...", country_code));
+            info!("Fetching locations for country: {}", country_code);
+
+            let locations = match self
                 .api_client
-                .get_measurements_for_country_in_date_range(country, start_date, end_date)
+                .get_locations_for_country(country_code)
                 .await
             {
-                Ok(m) => {
-                    info!("Fetched {} measurements for {} from API", m.len(), country);
-                    m
-                },
+                Ok(locs) => locs,
                 Err(e) => {
-                    // Log API error and use mock data as fallback
                     error!(
-                        "API request failed for {}: {}. Using mock data.",
-                        country, e
+                        "Failed to fetch locations for {}: {}. Skipping country.",
+                        country_code, e
                     );
-                    pb.println(format!(
-                        "{} API request failed for {}. Using mock data.",
-                        "Warning:".yellow(),
-                        country
+                    pb_outer.println(format!(
+                        "{} Failed to fetch locations for {}: {}. Skipping.",
+                        "Error:".red(),
+                        country_code,
+                        e
                     ));
-                    let mock_m = self
-                        .mock_provider
-                        .get_measurements_for_country_in_date_range(
-                            &country_str,
-                            start_date,
-                            end_date,
-                        )?; // Propagate error if mock provider fails
-                    info!(
-                        "Generated {} mock measurements for {}",
-                        mock_m.len(),
-                        country_str
-                    );
-                    mock_m
+                    pb_outer.inc(1); // Increment outer progress bar even on skip
+                    continue; // Skip to the next country
                 },
             };
-            pb.inc(1); // Increment progress after fetch/mock step
+            info!("Found {} locations for {}", locations.len(), country_code);
 
-            pb.set_message(format!(
-                "Inserting {} measurements for {}...",
-                measurements.len(),
-                country_str
+            if locations.is_empty() {
+                pb_outer.println(format!(
+                    "{} No locations found for {}. Skipping.",
+                    "Warning:".yellow(),
+                    country_code,
+                ));
+                pb_outer.inc(1);
+                continue;
+            }
+
+            let pb_inner = Self::create_progress_bar(locations.len() as u64);
+            pb_inner.set_message(format!(
+                "Fetching measurements for {} locations...",
+                country_code
             ));
-            self.db.insert_measurements(&measurements).await?;
-            info!(
-                "Inserted {} measurements for {}",
-                measurements.len(),
-                country_str
-            );
-            pb.inc(1); // Increment progress after insert step
+
+            for location in locations {
+                pb_inner.set_message(format!(
+                    "Loc {}: {} sensors",
+                    location.id,
+                    location.sensors.len()
+                ));
+                info!(
+                    "Processing location ID: {} ({} sensors)",
+                    location.id,
+                    location.sensors.len()
+                );
+
+                for sensor in &location.sensors {
+                    info!("Fetching measurements for sensor ID: {}", sensor.id);
+                    let measurements_v3 = match self
+                        .api_client
+                        .get_measurements_for_sensor(sensor.id, start_date, end_date)
+                        .await
+                    {
+                        Ok(m) => m,
+                        Err(e) => {
+                            error!(
+                                "Failed to fetch measurements for sensor {}: {}. Skipping sensor.",
+                                sensor.id, e
+                            );
+                            pb_inner.println(format!(
+                                "{} Failed to fetch measurements for sensor {}: {}. Skipping.",
+                                "Warning:".yellow(),
+                                sensor.id,
+                                e
+                            ));
+                            continue; // Skip to the next sensor
+                        },
+                    };
+
+                    info!(
+                        "Fetched {} measurements for sensor {}",
+                        measurements_v3.len(),
+                        sensor.id
+                    );
+
+                    // Convert MeasurementV3 to DbMeasurement using the implemented function
+                    for m_v3 in measurements_v3 {
+                        // Determine the measurement time. The API doesn't return it directly
+                        // in the /measurements endpoint result items. We assume the measurement
+                        // corresponds roughly to the start of its period if available,
+                        // otherwise we might need a different strategy or accept potential inaccuracy.
+                        // For now, let's use the period's start time or fallback to `start_date`
+                        // of the query range as a rough estimate.
+                        // FIXME: This timestamp handling might need refinement based on API behavior.
+                        let measurement_time = m_v3
+                            .period
+                            .as_ref()
+                            .and_then(|p| p.datetime_from.as_ref())
+                            .map(|dt| dt.utc)
+                            .unwrap_or(start_date); // Fallback to query start time
+
+                        let db_m = crate::models::DbMeasurement::from_v3_measurement(
+                            &m_v3,
+                            &location,
+                            sensor.id,
+                            measurement_time,
+                        );
+                        all_db_measurements.push(db_m);
+                    }
+                }
+                pb_inner.inc(1); // Increment inner progress bar after processing a location
+            }
+            pb_inner.finish_with_message(format!("Finished fetching for {}", country_code));
+            pb_outer.inc(1); // Increment outer progress bar after processing a country
         }
-        pb.finish_with_message("Data import completed successfully!".to_string());
+        pb_outer.finish_with_message("Finished fetching all countries.");
+
+        if all_db_measurements.is_empty() {
+            println!("{}", "No measurements fetched to insert.".yellow());
+            info!("Data import process finished: No measurements fetched.");
+            return Ok(());
+        }
+
+        // Insert all collected measurements into the database
+        println!(
+            "{}",
+            format!(
+                "Inserting {} total measurements...",
+                all_db_measurements.len()
+            )
+            .yellow()
+        );
+        let pb_insert = Self::create_spinner("Inserting data into database...");
+        self.db.insert_measurements(&all_db_measurements).await?; // Assuming insert_measurements accepts Vec<DbMeasurement>
+        pb_insert.finish_with_message("Data insertion completed successfully!".to_string());
+        info!("Inserted {} total measurements.", all_db_measurements.len());
         info!("Data import process finished.");
         Ok(())
     }
@@ -639,7 +724,7 @@ pub fn prompt_days() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*; // Import items from parent module (App, Commands, etc.)
-    use crate::models::{CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking};
+    use crate::models::{CityLatestMeasurements, CountryAirQuality, PollutionRanking};
     use chrono::{Duration, Utc};
     use std::sync::{Arc, Mutex}; // Use std Mutex for simplicity in tests
 
@@ -706,7 +791,7 @@ mod tests {
 
         async fn insert_measurements(
             &self,
-            _measurements: &[Measurement], // Ignore input in mock
+            _measurements: &[crate::models::DbMeasurement], // Expect DbMeasurement now
         ) -> crate::error::Result<()> {
             self.state.lock().unwrap().insert_measurements_called = true;
             Ok(()) // Assume success for mock
@@ -756,7 +841,7 @@ mod tests {
     /// specifically for unit testing the command dispatch and validation logic in `App`.
     struct TestApp {
         db: MockDatabase,
-        mock_provider: MockDataProvider, // Use real mock provider for import test simplicity
+        // mock_provider: MockDataProvider, // Removed field
     }
 
     impl TestApp {
@@ -764,7 +849,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 db: MockDatabase::new(),
-                mock_provider: MockDataProvider::new(),
+                // mock_provider: MockDataProvider::new(), // Removed initialization
             }
         }
 
@@ -792,13 +877,37 @@ mod tests {
         async fn run_import(&self, days: i64) -> crate::error::Result<()> {
             self.db.init_schema().await?; // Import implicitly initializes schema
             let end_date = Utc::now();
-            let start_date = end_date - Duration::days(days);
+            let _start_date = end_date - Duration::days(days); // Prefixed with underscore
             for country in COUNTRIES.iter() {
-                // Use mock provider to generate data for the test
-                let mock_measurements = self
-                    .mock_provider
-                    .get_measurements_for_country_in_date_range(country, start_date, end_date)?;
-                self.db.insert_measurements(&mock_measurements).await?;
+                // Simulate fetching and converting to DbMeasurement for the test
+                // In a real test, you might create more realistic DbMeasurement instances
+                let placeholder_db_measurements = vec![
+                    // Create one placeholder DbMeasurement per country for the test
+                    crate::models::DbMeasurement {
+                        id: None,
+                        location_id: 1,     // Placeholder
+                        sensor_id: Some(1), // Placeholder
+                        location_name: "Mock Location".to_string(),
+                        parameter_id: 1,                       // Placeholder
+                        parameter_name: "pm25".to_string(),    // Placeholder
+                        value: sqlx::types::Decimal::from(10), // Placeholder
+                        unit: "µg/m³".to_string(),
+                        date_utc: Utc::now(),
+                        date_local: Utc::now().to_rfc3339(),
+                        country: country.to_string(),
+                        city: Some("Mock City".to_string()),
+                        latitude: Some(0.0),
+                        longitude: Some(0.0),
+                        is_mobile: false,
+                        is_monitor: true,
+                        owner_name: "Mock Owner".to_string(),
+                        provider_name: "Mock Provider".to_string(),
+                    },
+                ];
+                // Call the mock insert with the placeholder DbMeasurement data
+                self.db
+                    .insert_measurements(&placeholder_db_measurements)
+                    .await?;
             }
             Ok(())
         }

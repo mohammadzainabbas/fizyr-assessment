@@ -48,7 +48,7 @@
 >
 > **Key features:**
 >
-> - [x] Fetches air quality data from OpenAQ API v3 for specified countries (NL, DE, FR, GR, ES, PK).
+> - [x] Fetches air quality data from OpenAQ API v3 (locations, sensors, measurements) for specified countries (NL, DE, FR, GR, ES, PK).
 > - [x] Stores normalized data in a PostgreSQL database.
 > - [x] Interactive CLI menu for user operations (schema init, data import, queries).
 > - [x] Query: Find the most polluted country based on recent PM2.5/PM10.
@@ -210,7 +210,7 @@ If you prefer to run outside Docker:
 
 ### Core Logic
 
-The application fetches air quality measurements (PM2.5, PM10, O3, etc.) from the [OpenAQ API v3](https://docs.openaq.org/reference/measurements_get_v3_measurements_get) for a predefined list of countries (NL, DE, FR, GR, ES, PK). This data, including location details and timestamps, is then stored in a PostgreSQL database.
+The application fetches air quality data for a predefined list of countries (NL, DE, FR, GR, ES, PK) using the [OpenAQ API v3](https://docs.openaq.org/). It first retrieves locations for a country, then fetches measurements for each sensor at those locations. This data, including location details, sensor info, and timestamps, is then stored in a PostgreSQL database.
 
 The core functionality is exposed through an interactive Command Line Interface (CLI) built using `dialoguer`, allowing users to:
 1.  Initialize the database schema.
@@ -220,16 +220,17 @@ The core functionality is exposed through an interactive Command Line Interface 
 ### Database Schema
 
 A single table, `measurements`, stores the air quality data.
-- **Columns:** Include `location_id`, `location`, `parameter`, `value` (as `NUMERIC` for precision), `unit`, `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country`, `city`, `latitude`, `longitude`, and `created_at`.
+- **Columns:** Include `id`, `location_id`, `sensor_id`, `location_name`, `parameter_id`, `parameter_name`, `value` (as `NUMERIC`), `unit`, `date_utc` (`TIMESTAMPTZ`), `date_local` (`TEXT`), `country`, `city`, `latitude`, `longitude`, `is_mobile`, `is_monitor`, `owner_name`, `provider_name`, and `created_at`.
 - **Initialization:** Handled idempotently (`CREATE TABLE IF NOT EXISTS`) by the `init_schema` function in `src/db/postgres.rs`, triggered via the CLI.
-- **Indexes:** Created on `country`, `parameter`, and `date_utc` to optimize common query patterns.
+- **Indexes:** Created on `country`, `parameter_name`, `date_utc`, `sensor_id`, and `parameter_id` to optimize common query patterns.
+- **Constraint:** A `UNIQUE` constraint exists on `(sensor_id, date_utc)` to prevent duplicate entries.
 
 ### API Interaction (`src/api/`)
 
-- **Client:** `OpenAQClient` in `openaq.rs` uses `reqwest` to make asynchronous GET requests to the `/v3/measurements` endpoint.
+- **Client:** `OpenAQClient` in `openaq.rs` uses `reqwest` to make asynchronous GET requests to the relevant OpenAQ v3 endpoints (e.g., `/v3/locations`, `/v3/sensors/{id}/measurements`).
 - **Authentication:** Uses the `X-API-Key` header as required by OpenAQ API v3.
-- **Error Handling:** Includes checks for network errors and non-success HTTP status codes (4xx, 5xx), logging relevant details.
-- **Fallback:** `MockDataProvider` in `mock.rs` generates plausible random data if an API call fails, allowing the import process to continue.
+- **Error Handling:** Includes checks for network errors and non-success HTTP status codes (4xx, 5xx), logging relevant details. Pagination is handled within the client methods.
+- **Fallback:** Mock data provider is no longer used for import fallback. API errors during import are logged, and processing may skip affected countries/sensors.
 
 ### CLI Interface (`src/cli/`)
 
@@ -251,14 +252,13 @@ A single table, `measurements`, stores the air quality data.
 - **Testing:**
     - Unit tests (`src/cli/commands.rs`) use mocking (`MockDatabase`) to test CLI command logic in isolation.
     - Integration tests (`src/db/postgres.rs`) use the `sqlx::test` macro for transactional tests against a real database instance, gated by the `integration-tests` feature flag.
-- **Data Import:** Fetches data per country. Uses `ON CONFLICT DO NOTHING` during insertion for basic idempotency against duplicate measurements. Mock data fallback enhances resilience.
+- **Data Import:** Fetches locations per country, then measurements per sensor. Uses `ON CONFLICT (sensor_id, date_utc) DO NOTHING` during insertion to handle duplicate measurements.
 - **Pollution Index:** Implements a simple weighted index (`pm2.5 * 1.5 + pm10`) for the "most polluted" feature, prioritizing PM2.5.
 
 #
 
 ## Future Improvements
 
-- **API Pagination:** Implement proper pagination for the OpenAQ API calls to handle cases exceeding the 1000-record limit per request.
 - **Robust Error Handling:** Add retry logic (e.g., with exponential backoff) for transient network or API errors.
 - **Configuration File:** Move settings (country list, API URL, DB connection details) to a configuration file (e.g., `config.toml`) instead of environment variables or hardcoding.
 - **Database Migrations:** Use a dedicated migration tool (like `sqlx-cli` or `refinery`) for more robust schema management instead of `CREATE TABLE IF NOT EXISTS`.
