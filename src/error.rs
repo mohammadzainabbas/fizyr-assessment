@@ -12,11 +12,15 @@ use thiserror::Error;
 pub enum AppError {
     /// Error originating from the OpenAQ API client (`reqwest`).
     #[error("API Error: {0}")]
-    Api(Arc<reqwest::Error>),
+    Api(Arc<reqwest::Error>), // Reverted to Arc<reqwest::Error>
 
     /// Error originating from database operations (`sqlx`).
     #[error("Database Error: {0}")]
     Db(Arc<sqlx::Error>),
+
+    /// Error during JSON parsing (`serde_json`). Wrapped in Arc as serde_json::Error is not Clone.
+    #[error("JSON Parsing Error: {0}")]
+    JsonParse(Arc<serde_json::Error>), // Wrapped in Arc
 
     /// Error related to accessing environment variables.
     #[error("Environment Error: {0}")]
@@ -48,6 +52,7 @@ pub type Result<T> = std::result::Result<T, AppError>;
 
 impl From<reqwest::Error> for AppError {
     fn from(err: reqwest::Error) -> Self {
+        // Reverted to wrapping in Arc
         AppError::Api(Arc::new(err))
     }
 }
@@ -75,3 +80,10 @@ impl From<indicatif::style::TemplateError> for AppError {
         AppError::Template(Arc::new(err))
     }
 }
+
+impl From<serde_json::Error> for AppError {
+    fn from(err: serde_json::Error) -> Self {
+        AppError::JsonParse(Arc::new(err))
+    }
+}
+// Removed nested impl block from here

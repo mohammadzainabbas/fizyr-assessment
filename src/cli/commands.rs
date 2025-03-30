@@ -5,11 +5,10 @@
 //! and user interface elements (prompts, tables, progress bars), managing the
 //! overall application flow based on user input and application state.
 
-use crate::api::{MockDataProvider, OpenAQClient};
+use crate::api::OpenAQClient;
 use crate::db::Database;
 use crate::error::{AppError, Result};
-// Removed unused model imports: CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking
-use chrono::{Duration, Utc};
+use chrono::{Duration, NaiveTime, Utc};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
@@ -44,6 +43,18 @@ pub const COUNTRIES: [&str; 6] = [
     "PK", // Pakistan
 ];
 
+/// A mapping from country codes to their corresponding IDs in the OpenAQ API.
+pub fn get_country_id_map() -> std::collections::HashMap<&'static str, u32> {
+    let mut map = std::collections::HashMap::new();
+    map.insert("PK", 109); // Pakistan
+    map.insert("NL", 94); // Netherlands
+    map.insert("DE", 50); // Germany
+    map.insert("GR", 80); // Greece
+    map.insert("ES", 67); // Spain
+    map.insert("FR", 22); // France
+    map
+}
+
 /// Returns a map associating country codes with their full names.
 /// Used for displaying user-friendly names in prompts and output.
 fn get_country_name_map() -> HashMap<&'static str, &'static str> {
@@ -60,16 +71,17 @@ fn get_country_name_map() -> HashMap<&'static str, &'static str> {
 /// Defines the available commands triggerable via the interactive menu.
 #[derive(Debug, Clone)]
 pub enum Commands {
-    /// Initialize or re-initialize the database schema (`measurements` table and indexes).
+    /// Initialize or re-initialize the database schema (`locations`, `sensors`, `measurements` tables and indexes).
     InitDb,
-    /// Import data from the OpenAQ API for a specified number of past days.
+    /// Import data from the OpenAQ API: fetches top 10 locations per country, saves locations/sensors,
+    /// then fetches daily measurements for each sensor for the specified number of past days.
     Import { days: i64 },
     /// Find the most polluted country (from `COUNTRIES`) based on recent PM2.5/PM10 data.
     MostPolluted,
     /// Calculate the 5-day average air quality metrics for a specific country.
     Average(AverageArgs),
-    /// Get the latest measurements for all parameters, grouped by city, for a specific country.
-    Measurements(MeasurementsArgs),
+    /// Get the latest measurements for all parameters, grouped by locality, for a specific country.
+    MeasurementsByLocality(MeasurementsByLocalityArgs),
 }
 
 /// Arguments for the `Average` command.
@@ -79,9 +91,9 @@ pub struct AverageArgs {
     pub country: String,
 }
 
-/// Arguments for the `Measurements` command.
+/// Arguments for the `MeasurementsByLocality` command.
 #[derive(Debug, Clone)]
-pub struct MeasurementsArgs {
+pub struct MeasurementsByLocalityArgs {
     /// The 2-letter country code for which to retrieve measurements.
     pub country: String,
 }
@@ -94,8 +106,7 @@ pub struct MeasurementsArgs {
 pub struct App {
     db: Database,
     api_client: OpenAQClient,
-    mock_provider: MockDataProvider, // Used as fallback if API fails during import
-    state: Arc<Mutex<AppState>>,     // Shared, mutable state tracking DB/import status
+    state: Arc<Mutex<AppState>>, // Shared, mutable state tracking DB/import status
 }
 
 impl App {
@@ -127,7 +138,6 @@ impl App {
 
         let db = Database::new(&database_url).await?;
         let api_client = OpenAQClient::new(api_key);
-        let mock_provider = MockDataProvider::new();
 
         // Determine initial state by checking database
         let initial_state = if db.has_data_imported().await? {
@@ -142,7 +152,6 @@ impl App {
         Ok(Self {
             db,
             api_client,
-            mock_provider,
             state: Arc::new(Mutex::new(initial_state)),
         })
     }
@@ -204,99 +213,264 @@ impl App {
                 self.calculate_average(&args.country).await?;
                 Ok(())
             },
-            Commands::Measurements(args) => {
-                self.get_measurements_table(&args.country).await?;
+            Commands::MeasurementsByLocality(args) => {
+                // Renamed variant
+                self.get_measurements_by_locality_table(&args.country)
+                    .await?; // Renamed method call
                 Ok(())
             },
         }
     }
 
-    /// Imports data for the specified number of past days for all `COUNTRIES`.
+    /// Imports air quality data for the specified number of past days for all predefined `COUNTRIES`.
     ///
-    /// Fetches data from the OpenAQ API. If an API request fails for a country,
-    /// it falls back to using the `MockDataProvider`. Data is then inserted into the database.
-    /// Displays progress using `indicatif`.
+    /// The import process follows these steps:
+    /// 1. Ensures the database schema (`locations`, `sensors`, `measurements`) is initialized.
+    /// 2. Iterates through each country defined in `COUNTRIES`.
+    /// 3. Fetches the top 10 locations for the current country using the OpenAQ API.
+    /// 4. Inserts the fetched location data into the `locations` table.
+    /// 5. Inserts the sensor data associated with these locations into the `sensors` table.
+    /// 6. Collects all successfully saved sensors across all processed countries.
+    /// 7. Iterates through the collected sensors and fetches daily aggregated measurements
+    ///    from the OpenAQ API for the specified date range (`days` ago to now).
+    ///    - Includes retry logic (3 attempts with 10s delay) for measurement fetching errors.
+    /// 8. Converts valid fetched measurements into `DbMeasurement` structs.
+    /// 9. Inserts all collected `DbMeasurement` records into the `measurements` table in a single transaction.
+    ///
+    /// Displays progress using `indicatif` progress bars. Handles and logs errors during API calls
+    /// and database operations, attempting to continue processing other countries/sensors where possible.
     ///
     /// # Arguments
     ///
-    /// * `days` - The number of days of historical data to import.
+    /// * `days` - The number of past days (from midnight UTC) for which to import measurement data.
     ///
     /// # Errors
     ///
-    /// Returns `AppError` if schema initialization, data fetching (including mock fallback),
-    /// or database insertion fails.
+    /// Returns `AppError` if critical operations like schema initialization or the final
+    /// measurement insertion transaction fail. Errors during individual API calls or
+    /// location/sensor insertions are logged, and the process attempts to continue.
     async fn import_data(&self, days: i64) -> Result<()> {
         println!(
             "{} {}",
             "Importing data for the last".yellow(),
             format!("{} days", days).yellow().bold()
         );
-        let pb = Self::create_progress_bar((COUNTRIES.len() * 2) as u64); // 2 steps per country (fetch, insert)
-        pb.enable_steady_tick(StdDuration::from_millis(100));
 
         info!("Ensuring database schema exists before import...");
         self.db.init_schema().await?; // Idempotent schema initialization
 
-        let end_date = Utc::now();
-        let start_date = end_date - Duration::days(days);
+        // Calculate date range aligned to midnight UTC
+        let today_utc = Utc::now().date_naive();
+        let end_date = today_utc
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+            .and_local_timezone(Utc)
+            .unwrap();
+        let start_date = (today_utc - Duration::days(days))
+            .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+            .and_local_timezone(Utc)
+            .unwrap();
         info!("Importing data from {} to {}", start_date, end_date);
 
-        for country in COUNTRIES.iter() {
-            let country_str = country.to_string();
-            pb.set_message(format!("Fetching data for {}...", country_str));
+        let total_countries = COUNTRIES.len();
+        let pb_locations = Self::create_progress_bar(total_countries as u64);
+        pb_locations.set_message("Fetching & saving locations/sensors...");
 
-            // Attempt to fetch from API, fallback to mock data on error
-            let measurements = match self
-                .api_client
-                .get_measurements_for_country_in_date_range(country, start_date, end_date)
-                .await
-            {
-                Ok(m) => {
-                    info!("Fetched {} measurements for {} from API", m.len(), country);
-                    m
-                },
-                Err(e) => {
-                    // Log API error and use mock data as fallback
+        // Store (location, sensor) pairs to fetch measurements later
+        let mut sensors_to_fetch: Vec<(crate::models::Location, crate::models::SensorBase)> =
+            Vec::new();
+
+        // --- Step 1 & 2: Fetch and Save Locations/Sensors per Country ---
+        for country_code in COUNTRIES.iter() {
+            pb_locations.set_message(format!("Processing {}...", country_code));
+            info!("Fetching locations for country: {}", country_code);
+
+            let country_id_map = get_country_id_map();
+            let country_id = match country_id_map.get(country_code) {
+                Some(id) => *id, // Dereference id
+                None => {
                     error!(
-                        "API request failed for {}: {}. Using mock data.",
-                        country, e
+                        "No country ID mapping found for {}. Skipping.",
+                        country_code
                     );
-                    pb.println(format!(
-                        "{} API request failed for {}. Using mock data.",
-                        "Warning:".yellow(),
-                        country
+                    pb_locations.println(format!(
+                        "{} No country ID mapping found for {}. Skipping.",
+                        "Error:".red(),
+                        country_code
                     ));
-                    let mock_m = self
-                        .mock_provider
-                        .get_measurements_for_country_in_date_range(
-                            &country_str,
-                            start_date,
-                            end_date,
-                        )?; // Propagate error if mock provider fails
-                    info!(
-                        "Generated {} mock measurements for {}",
-                        mock_m.len(),
-                        country_str
-                    );
-                    mock_m
+                    pb_locations.inc(1);
+                    continue;
                 },
             };
-            pb.inc(1); // Increment progress after fetch/mock step
 
-            pb.set_message(format!(
-                "Inserting {} measurements for {}...",
-                measurements.len(),
-                country_str
-            ));
-            self.db.insert_measurements(&measurements).await?;
-            info!(
-                "Inserted {} measurements for {}",
-                measurements.len(),
-                country_str
-            );
-            pb.inc(1); // Increment progress after insert step
+            // Fetch top 10 locations for the country
+            let locations = match self
+                .api_client
+                .get_locations_for_country(&[country_id])
+                .await
+            {
+                Ok(locs) => locs,
+                Err(e) => {
+                    error!(
+                        "Failed to fetch locations for {} (ID: {}): {}. Skipping.",
+                        country_code, country_id, e
+                    );
+                    pb_locations.println(format!(
+                        "{} Failed to fetch locations for {} (ID: {}): {}. Skipping.",
+                        "Error:".red(),
+                        country_code,
+                        country_id,
+                        e
+                    ));
+                    pb_locations.inc(1);
+                    continue;
+                },
+            };
+            info!("Fetched {} locations for {}", locations.len(), country_code);
+
+            if locations.is_empty() {
+                pb_locations.println(format!(
+                    "{} No locations found for {}. Skipping.",
+                    "Warning:".yellow(),
+                    country_code
+                ));
+                pb_locations.inc(1);
+                continue;
+            }
+
+            // Save locations to DB
+            if let Err(e) = self.db.insert_locations(&locations).await {
+                error!(
+                    "Failed to insert locations for {}: {}. Skipping country's sensors.",
+                    country_code, e
+                );
+                pb_locations.println(format!(
+                    "{} Failed to save locations for {}: {}. Skipping sensors.",
+                    "Error:".red(),
+                    country_code,
+                    e
+                ));
+                pb_locations.inc(1);
+                continue;
+            }
+
+            // Save sensors and collect them for measurement fetching
+            for loc in locations {
+                if let Err(e) = self.db.insert_sensors(loc.id as i64, &loc.sensors).await {
+                    // Log error but continue processing other locations/sensors
+                    error!("Failed to insert sensors for location {}: {}", loc.id, e);
+                    pb_locations.println(format!(
+                        "{} Failed to save sensors for location {}: {}.",
+                        "Warning:".yellow(),
+                        loc.id,
+                        e
+                    ));
+                } else {
+                    // Add sensors to the list for fetching measurements later
+                    for sensor in loc.sensors.iter() {
+                        sensors_to_fetch.push((loc.clone(), sensor.clone())); // Clone necessary data
+                    }
+                }
+            }
+            pb_locations.inc(1);
         }
-        pb.finish_with_message("Data import completed successfully!".to_string());
+        pb_locations.finish_with_message("Finished fetching & saving locations/sensors.");
+
+        // --- Step 3 & 4: Fetch and Save Measurements for All Collected Sensors ---
+        if sensors_to_fetch.is_empty() {
+            println!("{}", "No sensors found to fetch measurements for.".yellow());
+            info!("Data import process finished: No sensors found.");
+            return Ok(());
+        }
+
+        let pb_measurements = Self::create_progress_bar(sensors_to_fetch.len() as u64);
+        pb_measurements.set_message("Fetching measurements...");
+        let mut all_db_measurements = Vec::new();
+        let max_retries = 3;
+        let retry_delay = StdDuration::from_secs(10);
+
+        for (location_context, sensor) in sensors_to_fetch {
+            pb_measurements.set_message(format!("Sensor {}...", sensor.id));
+            info!("Fetching measurements for sensor ID: {}", sensor.id);
+            let mut measurements_v3 = None; // Option to hold fetched measurements
+
+            for attempt in 0..max_retries {
+                match self
+                    .api_client
+                    .get_measurements_for_sensor(sensor.id, start_date, end_date)
+                    .await
+                {
+                    Ok(m) => {
+                        measurements_v3 = Some(m);
+                        break; // Success, exit retry loop
+                    },
+                    Err(e) => {
+                        error!(
+                            "Attempt {}/{} failed to fetch measurements for sensor {}: {}",
+                            attempt + 1,
+                            max_retries,
+                            sensor.id,
+                            e
+                        );
+                        if attempt + 1 < max_retries {
+                            pb_measurements.println(format!(
+                                "{} Retrying sensor {} after {:?}...",
+                                "Warning:".yellow(),
+                                sensor.id,
+                                retry_delay
+                            ));
+                            tokio::time::sleep(retry_delay).await;
+                        } else {
+                            pb_measurements.println(format!(
+                                "{} Failed to fetch measurements for sensor {} after {} attempts: {}. Skipping.",
+                                "Error:".red(), sensor.id, max_retries, e
+                            ));
+                        }
+                    },
+                }
+            }
+
+            // Process measurements if fetched successfully
+            if let Some(fetched_measurements) = measurements_v3 {
+                info!(
+                    "Fetched {} measurements for sensor {}",
+                    fetched_measurements.len(),
+                    sensor.id
+                );
+                for m_v3 in fetched_measurements {
+                    let db_m = crate::models::DbMeasurement::from_daily_measurement(
+                        &m_v3,
+                        &location_context, // Use the stored location context
+                        &sensor,           // Use the stored sensor context
+                    );
+                    all_db_measurements.push(db_m);
+                }
+            }
+            pb_measurements.inc(1);
+        }
+        pb_measurements.finish_with_message("Finished fetching measurements.");
+
+        // --- Step 4 (Continued): Insert Measurements into DB ---
+        if all_db_measurements.is_empty() {
+            println!(
+                "{}",
+                "No measurements fetched successfully to insert.".yellow()
+            );
+            info!("Data import process finished: No measurements fetched.");
+            return Ok(());
+        }
+
+        println!(
+            "{}",
+            format!(
+                "Inserting {} total measurements...",
+                all_db_measurements.len()
+            )
+            .yellow()
+        );
+        let pb_insert = Self::create_spinner("Inserting data into database...");
+        self.db.insert_measurements(&all_db_measurements).await?;
+        pb_insert.finish_with_message("Data insertion completed successfully!".to_string());
+        info!("Inserted {} total measurements.", all_db_measurements.len());
         info!("Data import process finished.");
         Ok(())
     }
@@ -448,10 +622,10 @@ impl App {
         Ok(())
     }
 
-    /// Fetches and displays the latest measurement for each parameter, grouped by city,
+    /// Fetches and displays the latest measurement for each parameter, grouped by locality,
     /// for the specified country.
     ///
-    /// Validates the country code, queries the database using `db.get_latest_measurements_by_city`,
+    /// Validates the country code, queries the database using `db.get_latest_measurements_by_locality`,
     /// and formats the results in a table.
     ///
     /// # Arguments
@@ -462,7 +636,8 @@ impl App {
     ///
     /// Returns `AppError::Cli` if the country code is invalid.
     /// Returns `AppError` if the database query or table formatting fails.
-    async fn get_measurements_table(&self, country: &str) -> Result<()> {
+    async fn get_measurements_by_locality_table(&self, country: &str) -> Result<()> {
+        // Renamed method
         let country_code = country.to_uppercase();
         let country_map = get_country_name_map();
         let full_country_name = country_map
@@ -480,22 +655,24 @@ impl App {
 
         println!(
             "{} {} ({})",
-            "Fetching latest measurements by city for".yellow(),
+            "Fetching latest measurements by locality for".yellow(), // Updated text
             full_country_name.yellow().bold(),
             country_code.yellow().bold()
         );
         let pb = Self::create_spinner("Querying database...");
-        let city_measurements = self
+        // Call the renamed DB function
+        let locality_measurements = self
             .db
-            .get_latest_measurements_by_city(&country_code)
+            .get_latest_measurements_by_locality(&country_code)
             .await?;
         pb.finish_and_clear();
 
-        if city_measurements.is_empty() {
+        if locality_measurements.is_empty() {
+            // Use updated variable name
             println!(
                 "{}",
                 format!(
-                    "No measurements found for cities in {} ({})",
+                    "No measurements found for localities in {} ({})", // Updated text
                     full_country_name, country_code
                 )
                 .yellow()
@@ -505,7 +682,7 @@ impl App {
 
         println!(
             "{} {} ({})",
-            "Latest measurements by city for".green(),
+            "Latest measurements by locality for".green(), // Updated text
             full_country_name.bold().cyan(),
             country_code.bold().cyan()
         );
@@ -515,8 +692,8 @@ impl App {
             .load_preset(UTF8_FULL)
             .set_content_arrangement(ContentArrangement::Dynamic)
             .set_header(vec![
-                Cell::new("City").fg(Color::Green),
-                Cell::new("PM2.5").fg(Color::Green), // Assuming µg/m³ unit implicitly
+                Cell::new("Locality").fg(Color::Green), // Updated header
+                Cell::new("PM2.5").fg(Color::Green),
                 Cell::new("PM10").fg(Color::Green),
                 Cell::new("O3").fg(Color::Green),
                 Cell::new("NO2").fg(Color::Green),
@@ -531,9 +708,10 @@ impl App {
                 .unwrap_or_else(|| "-".to_string())
         };
 
-        for measurement in city_measurements {
+        for measurement in locality_measurements {
+            // Use updated variable name
             table.add_row(vec![
-                Cell::new(measurement.city).fg(Color::Cyan),
+                Cell::new(measurement.locality).fg(Color::Cyan), // Use renamed field
                 Cell::new(format_decimal(measurement.pm25)),
                 Cell::new(format_decimal(measurement.pm10)),
                 Cell::new(format_decimal(measurement.o3)),
@@ -639,7 +817,7 @@ pub fn prompt_days() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*; // Import items from parent module (App, Commands, etc.)
-    use crate::models::{CityLatestMeasurements, CountryAirQuality, Measurement, PollutionRanking};
+    use crate::models::{CityLatestMeasurements, CountryAirQuality, PollutionRanking};
     use chrono::{Duration, Utc};
     use std::sync::{Arc, Mutex}; // Use std Mutex for simplicity in tests
 
@@ -706,7 +884,7 @@ mod tests {
 
         async fn insert_measurements(
             &self,
-            _measurements: &[Measurement], // Ignore input in mock
+            _measurements: &[crate::models::DbMeasurement], // Expect DbMeasurement now
         ) -> crate::error::Result<()> {
             self.state.lock().unwrap().insert_measurements_called = true;
             Ok(()) // Assume success for mock
@@ -752,11 +930,10 @@ mod tests {
     }
 
     // --- Test Harness ---
-    /// A simplified version of `App` using `MockDatabase` and `MockDataProvider`
+    /// A simplified version of `App` using `MockDatabase`
     /// specifically for unit testing the command dispatch and validation logic in `App`.
     struct TestApp {
         db: MockDatabase,
-        mock_provider: MockDataProvider, // Use real mock provider for import test simplicity
     }
 
     impl TestApp {
@@ -764,7 +941,6 @@ mod tests {
         fn new() -> Self {
             Self {
                 db: MockDatabase::new(),
-                mock_provider: MockDataProvider::new(),
             }
         }
 
@@ -777,7 +953,9 @@ mod tests {
                 Commands::Import { days } => self.run_import(days).await,
                 Commands::MostPolluted => self.run_most_polluted().await,
                 Commands::Average(args) => self.run_average(&args.country).await,
-                Commands::Measurements(args) => self.run_measurements_table(&args.country).await,
+                Commands::MeasurementsByLocality(args) => {
+                    self.run_measurements_by_locality_table(&args.country).await
+                }, // Renamed variant and method call
             }
         }
 
@@ -792,13 +970,47 @@ mod tests {
         async fn run_import(&self, days: i64) -> crate::error::Result<()> {
             self.db.init_schema().await?; // Import implicitly initializes schema
             let end_date = Utc::now();
-            let start_date = end_date - Duration::days(days);
+            let _start_date = end_date - Duration::days(days); // Prefixed with underscore
             for country in COUNTRIES.iter() {
-                // Use mock provider to generate data for the test
-                let mock_measurements = self
-                    .mock_provider
-                    .get_measurements_for_country_in_date_range(country, start_date, end_date)?;
-                self.db.insert_measurements(&mock_measurements).await?;
+                // Simulate fetching and converting to DbMeasurement for the test
+                // In a real test, you might create more realistic DbMeasurement instances
+                let placeholder_db_measurements = vec![
+                    // Create one placeholder DbMeasurement per country for the test
+                    crate::models::DbMeasurement {
+                        id: None,
+                        location_id: 1,                         // Placeholder
+                        sensor_id: 1, // Placeholder (Made non-optional based on model change)
+                        sensor_name: "Mock Sensor".to_string(), // Added
+                        location_name: "Mock Location".to_string(),
+                        parameter_id: 1,                    // Placeholder
+                        parameter_name: "pm25".to_string(), // Placeholder
+                        parameter_display_name: Some("PM2.5".to_string()), // Added
+                        value_avg: Some(sqlx::types::Decimal::from(10)), // Wrap in Some()
+                        value_min: Some(sqlx::types::Decimal::from(8)), // Added
+                        value_max: Some(sqlx::types::Decimal::from(12)), // Added
+                        measurement_count: Some(24),        // Added
+                        unit: "µg/m³".to_string(),
+                        date_utc: Utc::now()
+                            .date_naive()
+                            .and_hms_opt(0, 0, 0)
+                            .unwrap()
+                            .and_local_timezone(Utc)
+                            .unwrap(), // Use start of day
+                        date_local: Utc::now().date_naive().to_string(), // Use date string
+                        country: country.to_string(),
+                        city: Some("Mock City".to_string()),
+                        latitude: Some(0.0),
+                        longitude: Some(0.0),
+                        is_mobile: false,
+                        is_monitor: true,
+                        owner_name: "Mock Owner".to_string(),
+                        provider_name: "Mock Provider".to_string(),
+                    },
+                ];
+                // Call the mock insert with the placeholder DbMeasurement data
+                self.db
+                    .insert_measurements(&placeholder_db_measurements)
+                    .await?;
             }
             Ok(())
         }
@@ -820,7 +1032,11 @@ mod tests {
             Ok(())
         }
 
-        async fn run_measurements_table(&self, country: &str) -> crate::error::Result<()> {
+        async fn run_measurements_by_locality_table(
+            &self,
+            country: &str,
+        ) -> crate::error::Result<()> {
+            // Renamed method
             let country_code = country.to_uppercase();
             // Perform validation as in the real App method
             if !COUNTRIES.contains(&country_code.as_str()) {
@@ -930,11 +1146,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_measurements_valid_country_calls_db_method() {
+        // Keep test name for clarity
         let app = TestApp::new();
         // Set expectation for the mock DB call (empty vec is a valid result)
-        app.db.expect_get_latest_by_city(Ok(vec![]));
+        app.db.expect_get_latest_by_city(Ok(vec![])); // DB method name remains the same for now
 
-        let command = Commands::Measurements(MeasurementsArgs {
+        let command = Commands::MeasurementsByLocality(MeasurementsByLocalityArgs {
+            // Use renamed variant and args struct
             country: "DE".to_string(),
         });
         let result = app.run_command(command).await;
@@ -947,9 +1165,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_measurements_invalid_country_fails_validation() {
+        // Keep test name for clarity
         let app = TestApp::new();
         // No DB expectation needed
-        let command = Commands::Measurements(MeasurementsArgs {
+        let command = Commands::MeasurementsByLocality(MeasurementsByLocalityArgs {
+            // Use renamed variant and args struct
             country: "YY".to_string(),
         }); // Invalid code
         let result = app.run_command(command).await;

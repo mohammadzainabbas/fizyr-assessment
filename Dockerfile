@@ -17,9 +17,11 @@ RUN cargo build --release
 # Runtime stage
 FROM debian:bookworm-slim AS runtime
 
-# Install OpenSSL and other required packages
+# Install required runtime libraries:
+# - libpq5: PostgreSQL client library needed by sqlx
+# - ca-certificates: For verifying TLS certificates (used by reqwest with rustls)
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends libssl-dev libpq-dev ca-certificates && \
+    apt-get install -y --no-install-recommends libpq5 ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
