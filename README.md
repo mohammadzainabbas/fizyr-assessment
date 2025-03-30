@@ -66,7 +66,6 @@
   - [`main.rs`](src/main.rs) - Application entry point, logging setup, interactive loop.
   - [`api/`](src/api/) - Modules for interacting with external APIs (OpenAQ).
     - [`openaq.rs`](src/api/openaq.rs) - Client for the OpenAQ API.
-    - [`mock.rs`](src/api/mock.rs) - Mock data provider (fallback/testing).
   - [`cli/`](src/cli/) - Command-line interface logic.
     - [`commands.rs`](src/cli/commands.rs) - Command definitions, state management, user prompts.
   - [`db/`](src/db/) - Database interaction logic.

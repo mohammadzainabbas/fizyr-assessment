@@ -930,7 +930,7 @@ mod tests {
     }
 
     // --- Test Harness ---
-    /// A simplified version of `App` using `MockDatabase` and `MockDataProvider`
+    /// A simplified version of `App` using `MockDatabase`
     /// specifically for unit testing the command dispatch and validation logic in `App`.
     struct TestApp {
         db: MockDatabase,
@@ -941,7 +941,6 @@ mod tests {
         fn new() -> Self {
             Self {
                 db: MockDatabase::new(),
-                // mock_provider: MockDataProvider::new(), // Removed initialization
             }
         }
 
