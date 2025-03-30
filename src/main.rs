@@ -9,7 +9,7 @@ mod db;
 mod error;
 mod models;
 
-use cli::{App, AppState, AverageArgs, Commands, MeasurementsArgs};
+use cli::{App, AppState, AverageArgs, Commands, MeasurementsByLocalityArgs}; // Renamed Args struct
 use colored::*;
 use dialoguer::{theme::ColorfulTheme, Select};
 use error::Result;
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
                 options.push("Re-import Data");
                 options.push("Find Most Polluted Country");
                 options.push("Calculate Average Air Quality");
-                options.push("Get Measurements by City");
+                options.push("Get Measurements by Locality"); // Updated menu text
             },
         }
         options.push("Exit"); // Always add Exit option
@@ -155,7 +155,9 @@ async fn main() -> Result<()> {
                 4 => {
                     // Prompt for country needed for Measurements command
                     match cli::prompt_country() {
-                        Ok(country) => Some(Commands::Measurements(MeasurementsArgs { country })),
+                        Ok(country) => Some(Commands::MeasurementsByLocality(
+                            MeasurementsByLocalityArgs { country },
+                        )), // Renamed variant and args struct
                         Err(e) => {
                             println!("{} {}", "Failed to get country:".red(), e);
                             None

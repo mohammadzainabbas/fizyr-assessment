@@ -227,8 +227,8 @@ pub struct DbMeasurement {
     pub parameter_id: i32,
     pub parameter_name: String,
     pub parameter_display_name: Option<String>, // Added
-    /// Average value for the day (stored as Decimal).
-    pub value_avg: Decimal,
+    /// Average value for the day (stored as Decimal, nullable).
+    pub value_avg: Option<Decimal>,
     /// Minimum value for the day (stored as Decimal).
     pub value_min: Option<Decimal>,
     /// Maximum value for the day (stored as Decimal).
@@ -274,24 +274,21 @@ impl DbMeasurement {
                 })
         };
 
-        // Filter avg_val before converting
-        let value_avg_decimal = if avg_val >= 0.0 {
-            Decimal::from_f64(avg_val).unwrap_or_else(|| {
+        // Convert avg_val, storing None if negative or conversion fails
+        let value_avg_decimal_opt = if avg_val >= 0.0 {
+            Decimal::from_f64(avg_val).or_else(|| {
                 warn!(
-                    "Could not convert average f64 {} to Decimal precisely. Storing as ZERO.",
+                    "Could not convert average f64 {} to Decimal precisely. Storing as NULL.",
                     avg_val
                 );
-                Decimal::ZERO // Or consider storing NULL if conversion fails? For now, ZERO.
+                None // Store None (NULL) if conversion fails
             })
         } else {
-            // If avg_val is negative (like -999), store ZERO (or NULL if preferred)
-            // Storing ZERO might slightly skew averages if many invalid points exist,
-            // but avoids NULL complications in current queries.
             warn!(
-                "Negative avg_val {} encountered for sensor {}. Storing as ZERO.",
+                "Negative avg_val {} encountered for sensor {}. Storing as NULL.",
                 avg_val, sensor.id
             );
-            Decimal::ZERO
+            None // Store None (NULL) if avg_val is negative
         };
 
         Self {
@@ -306,7 +303,7 @@ impl DbMeasurement {
             parameter_id: m.parameter.id,
             parameter_name: m.parameter.name.clone(),
             parameter_display_name: m.parameter.display_name.clone(),
-            value_avg: value_avg_decimal, // Use the filtered and converted value
+            value_avg: value_avg_decimal_opt, // Assign the Option<Decimal> directly
             value_min: to_decimal_opt(min_val), // Use helper which now filters negatives
             value_max: to_decimal_opt(max_val), // Use helper which now filters negatives
             measurement_count,
@@ -329,8 +326,9 @@ impl DbMeasurement {
 /// Used as the result type for the "Get Measurements by City" query. Derives `sqlx::FromRow`.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct CityLatestMeasurements {
-    /// The name of the city.
-    pub city: String,
+    /// The name of the locality (often a city).
+    #[sqlx(rename = "city")] // Map the 'city' column from the query result to this field
+    pub locality: String,
     /// Latest PM2.5 value (Decimal for precision).
     pub pm25: Option<Decimal>,
     /// Latest PM10 value (Decimal for precision).

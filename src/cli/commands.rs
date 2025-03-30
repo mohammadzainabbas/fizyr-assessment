@@ -81,8 +81,8 @@ pub enum Commands {
     MostPolluted,
     /// Calculate the 5-day average air quality metrics for a specific country.
     Average(AverageArgs),
-    /// Get the latest measurements for all parameters, grouped by city, for a specific country.
-    Measurements(MeasurementsArgs),
+    /// Get the latest measurements for all parameters, grouped by locality, for a specific country.
+    MeasurementsByLocality(MeasurementsByLocalityArgs),
 }
 
 /// Arguments for the `Average` command.
@@ -92,9 +92,9 @@ pub struct AverageArgs {
     pub country: String,
 }
 
-/// Arguments for the `Measurements` command.
+/// Arguments for the `MeasurementsByLocality` command.
 #[derive(Debug, Clone)]
-pub struct MeasurementsArgs {
+pub struct MeasurementsByLocalityArgs {
     /// The 2-letter country code for which to retrieve measurements.
     pub country: String,
 }
@@ -217,8 +217,10 @@ impl App {
                 self.calculate_average(&args.country).await?;
                 Ok(())
             },
-            Commands::Measurements(args) => {
-                self.get_measurements_table(&args.country).await?;
+            Commands::MeasurementsByLocality(args) => {
+                // Renamed variant
+                self.get_measurements_by_locality_table(&args.country)
+                    .await?; // Renamed method call
                 Ok(())
             },
         }
@@ -613,10 +615,10 @@ impl App {
         Ok(())
     }
 
-    /// Fetches and displays the latest measurement for each parameter, grouped by city,
+    /// Fetches and displays the latest measurement for each parameter, grouped by locality,
     /// for the specified country.
     ///
-    /// Validates the country code, queries the database using `db.get_latest_measurements_by_city`,
+    /// Validates the country code, queries the database using `db.get_latest_measurements_by_locality`,
     /// and formats the results in a table.
     ///
     /// # Arguments
@@ -627,7 +629,8 @@ impl App {
     ///
     /// Returns `AppError::Cli` if the country code is invalid.
     /// Returns `AppError` if the database query or table formatting fails.
-    async fn get_measurements_table(&self, country: &str) -> Result<()> {
+    async fn get_measurements_by_locality_table(&self, country: &str) -> Result<()> {
+        // Renamed method
         let country_code = country.to_uppercase();
         let country_map = get_country_name_map();
         let full_country_name = country_map
@@ -645,22 +648,24 @@ impl App {
 
         println!(
             "{} {} ({})",
-            "Fetching latest measurements by city for".yellow(),
+            "Fetching latest measurements by locality for".yellow(), // Updated text
             full_country_name.yellow().bold(),
             country_code.yellow().bold()
         );
         let pb = Self::create_spinner("Querying database...");
-        let city_measurements = self
+        // Call the renamed DB function
+        let locality_measurements = self
             .db
-            .get_latest_measurements_by_city(&country_code)
+            .get_latest_measurements_by_locality(&country_code)
             .await?;
         pb.finish_and_clear();
 
-        if city_measurements.is_empty() {
+        if locality_measurements.is_empty() {
+            // Use updated variable name
             println!(
                 "{}",
                 format!(
-                    "No measurements found for cities in {} ({})",
+                    "No measurements found for localities in {} ({})", // Updated text
                     full_country_name, country_code
                 )
                 .yellow()
@@ -670,7 +675,7 @@ impl App {
 
         println!(
             "{} {} ({})",
-            "Latest measurements by city for".green(),
+            "Latest measurements by locality for".green(), // Updated text
             full_country_name.bold().cyan(),
             country_code.bold().cyan()
         );
@@ -680,8 +685,8 @@ impl App {
             .load_preset(UTF8_FULL)
             .set_content_arrangement(ContentArrangement::Dynamic)
             .set_header(vec![
-                Cell::new("City").fg(Color::Green),
-                Cell::new("PM2.5").fg(Color::Green), // Assuming µg/m³ unit implicitly
+                Cell::new("Locality").fg(Color::Green), // Updated header
+                Cell::new("PM2.5").fg(Color::Green),
                 Cell::new("PM10").fg(Color::Green),
                 Cell::new("O3").fg(Color::Green),
                 Cell::new("NO2").fg(Color::Green),
@@ -696,9 +701,10 @@ impl App {
                 .unwrap_or_else(|| "-".to_string())
         };
 
-        for measurement in city_measurements {
+        for measurement in locality_measurements {
+            // Use updated variable name
             table.add_row(vec![
-                Cell::new(measurement.city).fg(Color::Cyan),
+                Cell::new(measurement.locality).fg(Color::Cyan), // Use renamed field
                 Cell::new(format_decimal(measurement.pm25)),
                 Cell::new(format_decimal(measurement.pm10)),
                 Cell::new(format_decimal(measurement.o3)),
@@ -942,7 +948,9 @@ mod tests {
                 Commands::Import { days } => self.run_import(days).await,
                 Commands::MostPolluted => self.run_most_polluted().await,
                 Commands::Average(args) => self.run_average(&args.country).await,
-                Commands::Measurements(args) => self.run_measurements_table(&args.country).await,
+                Commands::MeasurementsByLocality(args) => {
+                    self.run_measurements_by_locality_table(&args.country).await
+                }, // Renamed variant and method call
             }
         }
 
@@ -972,7 +980,7 @@ mod tests {
                         parameter_id: 1,                    // Placeholder
                         parameter_name: "pm25".to_string(), // Placeholder
                         parameter_display_name: Some("PM2.5".to_string()), // Added
-                        value_avg: sqlx::types::Decimal::from(10), // Renamed from value
+                        value_avg: Some(sqlx::types::Decimal::from(10)), // Wrap in Some()
                         value_min: Some(sqlx::types::Decimal::from(8)), // Added
                         value_max: Some(sqlx::types::Decimal::from(12)), // Added
                         measurement_count: Some(24),        // Added
@@ -1019,7 +1027,11 @@ mod tests {
             Ok(())
         }
 
-        async fn run_measurements_table(&self, country: &str) -> crate::error::Result<()> {
+        async fn run_measurements_by_locality_table(
+            &self,
+            country: &str,
+        ) -> crate::error::Result<()> {
+            // Renamed method
             let country_code = country.to_uppercase();
             // Perform validation as in the real App method
             if !COUNTRIES.contains(&country_code.as_str()) {
@@ -1129,11 +1141,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_measurements_valid_country_calls_db_method() {
+        // Keep test name for clarity
         let app = TestApp::new();
         // Set expectation for the mock DB call (empty vec is a valid result)
-        app.db.expect_get_latest_by_city(Ok(vec![]));
+        app.db.expect_get_latest_by_city(Ok(vec![])); // DB method name remains the same for now
 
-        let command = Commands::Measurements(MeasurementsArgs {
+        let command = Commands::MeasurementsByLocality(MeasurementsByLocalityArgs {
+            // Use renamed variant and args struct
             country: "DE".to_string(),
         });
         let result = app.run_command(command).await;
@@ -1146,9 +1160,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_cmd_measurements_invalid_country_fails_validation() {
+        // Keep test name for clarity
         let app = TestApp::new();
         // No DB expectation needed
-        let command = Commands::Measurements(MeasurementsArgs {
+        let command = Commands::MeasurementsByLocality(MeasurementsByLocalityArgs {
+            // Use renamed variant and args struct
             country: "YY".to_string(),
         }); // Invalid code
         let result = app.run_command(command).await;

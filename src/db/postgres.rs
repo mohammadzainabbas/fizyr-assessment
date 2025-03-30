@@ -124,7 +124,7 @@ impl Database {
                 location_name TEXT NOT NULL, -- Renamed from location
                 parameter_id INT NOT NULL,
                 parameter_name TEXT NOT NULL, -- Renamed from parameter
-                value_avg NUMERIC NOT NULL, -- Using NUMERIC for precise storage
+                value_avg NUMERIC, -- Using NUMERIC for precise storage, now NULLABLE
                 value_min NUMERIC, -- Minimum value during the period
                 value_max NUMERIC, -- Maximum value during the period
                 measurement_count INT, -- Number of observations during the period
@@ -634,10 +634,12 @@ impl Database {
     /// # Errors
     ///
     /// Returns `AppError::Db` if the query fails. Returns an empty Vec if no data is found.
-    pub async fn get_latest_measurements_by_city(
+    pub async fn get_latest_measurements_by_locality(
+        // Renamed function
         &self,
         country: &str,
     ) -> Result<Vec<CityLatestMeasurements>> {
+        // Keep return type for now
         info!("Fetching latest measurements by city for {}", country);
 
         // SQL Query Explanation:
@@ -648,18 +650,19 @@ impl Database {
         //    the parameter values into separate columns (pm25, pm10, etc.). `MAX(date_utc)` finds the
         //    most recent update timestamp among all parameters for that city.
         let query = r#"
-        WITH latest_city_param AS (
-            SELECT DISTINCT ON (city, parameter_name) -- Use new column name
-                city,
-                parameter_name, -- Use new column name
-                value_avg, -- The value from the latest record
-                date_utc -- The timestamp from the latest record
+        -- Fetch latest measurements grouped by city/locality (using the 'city' column populated from 'locality')
+        WITH latest_locality_param AS (
+            SELECT DISTINCT ON (city, parameter_name) -- Still group by 'city' column
+                city, -- Select 'city' column
+                parameter_name,
+                value_avg,
+                date_utc
             FROM measurements
             WHERE country = $1 AND city IS NOT NULL -- Filter by country, ignore null cities
-            ORDER BY city, parameter_name, date_utc DESC -- Use new column name, Crucial for DISTINCT ON
+            ORDER BY city, parameter_name, date_utc DESC -- Order by city
         )
         SELECT
-            city,
+            city, -- Select 'city' column (which represents locality)
             -- Pivot parameter values into columns
             MAX(CASE WHEN parameter_name = 'pm25' THEN value_avg ELSE NULL END) as pm25,
             MAX(CASE WHEN parameter_name = 'pm10' THEN value_avg ELSE NULL END) as pm10,
@@ -667,11 +670,11 @@ impl Database {
             MAX(CASE WHEN parameter_name = 'no2' THEN value_avg ELSE NULL END) as no2,
             MAX(CASE WHEN parameter_name = 'so2' THEN value_avg ELSE NULL END) as so2,
             MAX(CASE WHEN parameter_name = 'co' THEN value_avg ELSE NULL END) as co,
-            -- Find the overall latest update time for the city across all parameters
+            -- Find the overall latest update time for the city/locality across all parameters
             MAX(date_utc) as last_updated
-        FROM latest_city_param
-        GROUP BY city
-        ORDER BY city -- Order results alphabetically by city name
+        FROM latest_locality_param
+        GROUP BY city -- Group by 'city' column
+        ORDER BY city -- Order results alphabetically by city/locality name
         "#;
 
         let results = sqlx::query_as::<_, CityLatestMeasurements>(query)
@@ -922,7 +925,7 @@ mod tests {
         .await?;
         assert_eq!(row1.country, "NL");
         assert_eq!(row1.parameter_name, "pm25");
-        assert_eq!(row1.value_avg, Decimal::from_f64(10.5).unwrap());
+        assert_eq!(row1.value_avg, Some(Decimal::from_f64(10.5).unwrap())); // Assert against Some()
         assert_eq!(row1.value_min, Some(Decimal::from_f64(8.0).unwrap())); // Check new field
         assert_eq!(row1.value_max, Some(Decimal::from_f64(12.0).unwrap())); // Check new field
         assert_eq!(row1.measurement_count, Some(20)); // Check new field
@@ -940,7 +943,7 @@ mod tests {
         .await?;
         assert_eq!(row2.country, "DE");
         assert_eq!(row2.parameter_name, "pm10");
-        assert_eq!(row2.value_avg, Decimal::from_f64(20.2).unwrap());
+        assert_eq!(row2.value_avg, Some(Decimal::from_f64(20.2).unwrap())); // Assert against Some()
         assert_eq!(row2.value_min, Some(Decimal::from_f64(15.0).unwrap()));
         assert_eq!(row2.value_max, Some(Decimal::from_f64(25.0).unwrap()));
         assert_eq!(row2.measurement_count, Some(21));
@@ -1066,50 +1069,56 @@ mod tests {
         // Add slightly older data for NL to test DISTINCT ON logic
         let db = Database { pool };
         // Use the new helper function
-        let older_nl_pm25 = create_test_db_measurement("NL", "pm25", 5.0, 2); // Older PM2.5 value
-        let older_nl_o3 = create_test_db_measurement("NL", "o3", 40.0, 1); // O3 data (recent)
+        let older_nl_pm25 =
+            create_test_db_measurement("NL", "pm25", 5.0, Some(4.0), Some(6.0), Some(20), 2); // Older PM2.5 value
+        let older_nl_o3 =
+            create_test_db_measurement("NL", "o3", 40.0, Some(30.0), Some(50.0), Some(22), 1); // O3 data (recent)
         db.insert_measurements(&[older_nl_pm25, older_nl_o3])
             .await?;
 
-        let results_nl = db.get_latest_measurements_by_city("NL").await?;
+        let results_nl = db.get_latest_measurements_by_locality("NL").await?; // Use renamed function
 
-        assert_eq!(results_nl.len(), 1, "Should only be one city entry for NL");
-        let nl_city_data = &results_nl[0];
-        assert_eq!(nl_city_data.city, "Test City NL");
+        assert_eq!(
+            results_nl.len(),
+            1,
+            "Should only be one locality entry for NL"
+        );
+        let nl_locality_data = &results_nl[0]; // Use renamed variable
+        assert_eq!(nl_locality_data.locality, "Test City NL"); // Use renamed field 'locality'
 
         // Check latest values (should pick the most recent ones from insert_test_data or the added O3)
-        assert!(nl_city_data.pm25.is_some());
+        assert!(nl_locality_data.pm25.is_some()); // Use renamed variable
         assert_eq!(
-            nl_city_data.pm25.unwrap(),
+            nl_locality_data.pm25.unwrap(), // Use renamed variable
             Decimal::from_f64(15.0).unwrap(),
             "Latest NL PM2.5 mismatch (should be 15.0, not 5.0)"
         );
-        assert!(nl_city_data.pm10.is_some());
+        assert!(nl_locality_data.pm10.is_some()); // Use renamed variable
         assert_eq!(
-            nl_city_data.pm10.unwrap(),
+            nl_locality_data.pm10.unwrap(), // Use renamed variable
             Decimal::from_f64(25.0).unwrap(),
             "Latest NL PM10 mismatch"
         );
-        assert!(nl_city_data.no2.is_some());
+        assert!(nl_locality_data.no2.is_some()); // Use renamed variable
         assert_eq!(
-            nl_city_data.no2.unwrap(),
+            nl_locality_data.no2.unwrap(), // Use renamed variable
             Decimal::from_f64(30.0).unwrap(),
             "Latest NL NO2 mismatch"
         );
-        assert!(nl_city_data.o3.is_some());
+        assert!(nl_locality_data.o3.is_some()); // Use renamed variable
         assert_eq!(
-            nl_city_data.o3.unwrap(),
+            nl_locality_data.o3.unwrap(), // Use renamed variable
             Decimal::from_f64(40.0).unwrap(),
             "Latest NL O3 mismatch"
         ); // Check the added O3
-        assert!(nl_city_data.so2.is_none(), "NL SO2 should be None");
-        assert!(nl_city_data.co.is_none(), "NL CO should be None");
+        assert!(nl_locality_data.so2.is_none(), "NL SO2 should be None"); // Use renamed variable
+        assert!(nl_locality_data.co.is_none(), "NL CO should be None"); // Use renamed variable
 
-        // Check last_updated timestamp (should be the timestamp of the most recent measurement overall for the city)
+        // Check last_updated timestamp (should be the timestamp of the most recent measurement overall for the city/locality)
         let one_day_ago = Utc::now() - Duration::days(1);
         // Allow some tolerance for timestamp comparison due to test execution time variance
         assert!(
-            (nl_city_data.last_updated - one_day_ago)
+            (nl_locality_data.last_updated - one_day_ago) // Use renamed variable
                 .num_seconds()
                 .abs()
                 < 15, // Increased tolerance slightly
