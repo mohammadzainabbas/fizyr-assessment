@@ -1,0 +1,12 @@
+# rustfmt.toml
+# https://rust-lang.github.io/rustfmt
+
+# stable
+edition = "2021"
+newline_style = "Unix"
+match_block_trailing_comma = true
+
+# nightly (Commented out as they require nightly toolchain)
+# group_imports = "StdExternalCrate"
+# imports_granularity = "Crate"
+# format_code_in_doc_comments = true

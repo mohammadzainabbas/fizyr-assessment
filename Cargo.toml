@@ -1,0 +1,75 @@
+[package]
+name = "fizyr-assessment"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mohammad Zain Abbas <mohammadzainabbas@gmail.com>"]
+description = "CLI tool for air quality data processing"
+license = "MIT"
+homepage = "https://github.com/mohammadzainabbas/fizyr-assessment"
+repository = "https://github.com/mohammadzainabbas/fizyr-assessment"
+keywords = ["rust", "fizyr-assessment", "air-quality-cli", "cli"]
+categories = ["command-line-utilities"]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+
+[dependencies]
+# CLI
+clap = { version = "4.5.3", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1.29.1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.11.22", features = ["json", "rustls-tls"], default-features = false }
+
+# Serialization/Deserialization
+serde = { version = "1.0.196", features = ["derive"] }
+serde_json = "1.0.113"
+num-traits = "0.2.19" # Moved from dev-dependencies
+
+# Database
+sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "decimal"] } # Added "decimal" feature
+
+# Environment variables
+dotenv = "0.15.0"
+
+# Date/Time
+chrono = { version = "0.4.34", features = ["serde"] }
+
+# Error handling
+anyhow = "1.0.80"
+thiserror = "1.0.57"
+
+# Logging
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] } # Added json feature for potential structured logging
+tracing-appender = "0.2" # Added for file logging
+
+# Parallelism
+rayon = "1.9.0"
+
+# Random number generation
+rand = "0.8.5"
+
+# CLI interaction
+colored = "2.1.0"
+dialoguer = { version = "0.11.0", features = ["fuzzy-select"] }
+indicatif = "0.17.8"
+comfy-table = "7.1.1" # Added for table output
+
+[dev-dependencies]
+mockito = "1.2.0"
+rstest = "0.18.2"
+serial_test = "2.0.0"
+sqlx = { version = "0.6.3", features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "decimal"] } # Added "decimal" feature
+# num-traits moved to main dependencies
+tokio = { version = "1.29.1", features = ["macros", "rt-multi-thread"] }
+
+[features]
+integration-tests = []
+
+[profile.release]
+lto = "thin"           # Enable ThinLTO for better optimization balance
+codegen-units = 1      # Maximize optimization opportunities, standard for release
+panic = "abort"        # Abort on panic for smaller binary and potentially faster code
+strip = true           # Strip symbols from the binary
