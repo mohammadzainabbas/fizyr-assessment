@@ -676,6 +676,7 @@ dependencies = [
  "comfy-table",
  "dialoguer",
  "dotenv",
+ "futures",
  "indicatif",
  "mockito",
  "num-traits",

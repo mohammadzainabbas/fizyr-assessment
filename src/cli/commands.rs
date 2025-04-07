@@ -12,13 +12,14 @@ use chrono::{Duration, NaiveTime, Utc};
 use colored::*;
 use comfy_table::{presets::UTF8_FULL, Attribute, Cell, Color, ContentArrangement, Table};
 use dialoguer::{theme::ColorfulTheme, Input, Select};
+use futures::stream::{self, StreamExt}; // Added for buffer_unordered
 use indicatif::{ProgressBar, ProgressStyle};
 use std::collections::HashMap;
 use std::env;
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tokio::sync::Mutex;
-use tracing::{error, info};
+use tracing::{debug, error, info}; // Added debug
 
 /// Represents the different states the application can be in, primarily tracking
 /// database initialization and data import status. This influences the available
@@ -382,72 +383,120 @@ impl App {
             return Ok(());
         }
 
+        // Define concurrency limit for API calls
+        const CONCURRENT_FETCHES: usize = 10;
+        info!(
+            "Fetching measurements for {} sensors concurrently (limit: {})...",
+            sensors_to_fetch.len(),
+            CONCURRENT_FETCHES
+        );
+
         let pb_measurements = Self::create_progress_bar(sensors_to_fetch.len() as u64);
-        pb_measurements.set_message("Fetching measurements...");
+        pb_measurements.set_message("Fetching measurements (concurrently)...");
         let mut all_db_measurements = Vec::new();
         let max_retries = 3;
         let retry_delay = StdDuration::from_secs(10);
 
-        for (location_context, sensor) in sensors_to_fetch {
-            pb_measurements.set_message(format!("Sensor {}...", sensor.id));
-            info!("Fetching measurements for sensor ID: {}", sensor.id);
-            let mut measurements_v3 = None; // Option to hold fetched measurements
+        // Create a stream of futures, each responsible for fetching data for one sensor (with retries)
+        let fetches = stream::iter(sensors_to_fetch).map(|(location_context, sensor)| {
+            // Clone necessary data for the async block
+            let api_client = self.api_client.clone();
+            let pb_clone = pb_measurements.clone(); // Clone progress bar for use in error messages
 
-            for attempt in 0..max_retries {
-                match self
-                    .api_client
-                    .get_measurements_for_sensor(sensor.id, start_date, end_date)
-                    .await
-                {
-                    Ok(m) => {
-                        measurements_v3 = Some(m);
-                        break; // Success, exit retry loop
-                    },
-                    Err(e) => {
-                        error!(
-                            "Attempt {}/{} failed to fetch measurements for sensor {}: {}",
-                            attempt + 1,
-                            max_retries,
-                            sensor.id,
-                            e
-                        );
-                        if attempt + 1 < max_retries {
-                            pb_measurements.println(format!(
-                                "{} Retrying sensor {} after {:?}...",
-                                "Warning:".yellow(),
+            async move {
+                info!("Starting fetch task for sensor ID: {}", sensor.id);
+                let mut last_error: Option<AppError> = None;
+
+                for attempt in 0..max_retries {
+                    match api_client
+                        .get_measurements_for_sensor(sensor.id, start_date, end_date)
+                        .await
+                    {
+                        Ok(measurements) => {
+                            debug!(
+                                "Successfully fetched {} measurements for sensor {} on attempt {}",
+                                measurements.len(),
                                 sensor.id,
-                                retry_delay
-                            ));
-                            tokio::time::sleep(retry_delay).await;
-                        } else {
-                            pb_measurements.println(format!(
-                                "{} Failed to fetch measurements for sensor {} after {} attempts: {}. Skipping.",
-                                "Error:".red(), sensor.id, max_retries, e
-                            ));
-                        }
-                    },
+                                attempt + 1
+                            );
+                            // Convert to DbMeasurement here to keep context
+                            let db_measurements: Vec<crate::models::DbMeasurement> = measurements
+                                .iter()
+                                .map(|m_v3| {
+                                    crate::models::DbMeasurement::from_daily_measurement(
+                                        m_v3,
+                                        &location_context,
+                                        &sensor,
+                                    )
+                                })
+                                .collect();
+                            return Ok((sensor.id, db_measurements)); // Return sensor ID and results on success
+                        },
+                        Err(e) => {
+                            error!(
+                                "Attempt {}/{} failed for sensor {}: {}",
+                                attempt + 1,
+                                max_retries,
+                                sensor.id,
+                                e
+                            );
+                            last_error = Some(e); // Store the last error
+                            if attempt + 1 < max_retries {
+                                pb_clone.println(format!(
+                                    "{} Retrying sensor {} after {:?}...",
+                                    "Warning:".yellow(),
+                                    sensor.id,
+                                    retry_delay
+                                ));
+                                tokio::time::sleep(retry_delay).await;
+                            }
+                        },
+                    }
                 }
-            }
-
-            // Process measurements if fetched successfully
-            if let Some(fetched_measurements) = measurements_v3 {
-                info!(
-                    "Fetched {} measurements for sensor {}",
-                    fetched_measurements.len(),
-                    sensor.id
+                // If loop finishes without success, return the last error.
+                // last_error is guaranteed to be Some if the loop finished without returning Ok.
+                let final_error =
+                    last_error.expect("last_error should contain an error after failed retries");
+                error!(
+                    "Failed to fetch measurements for sensor {} after {} attempts.",
+                    sensor.id, max_retries
                 );
-                for m_v3 in fetched_measurements {
-                    let db_m = crate::models::DbMeasurement::from_daily_measurement(
-                        &m_v3,
-                        &location_context, // Use the stored location context
-                        &sensor,           // Use the stored sensor context
-                    );
-                    all_db_measurements.push(db_m);
-                }
+                pb_clone.println(format!(
+                    "{} Failed permanently for sensor {}: {}",
+                    "Error:".red(),
+                    sensor.id,
+                    final_error
+                ));
+                Err((sensor.id, final_error)) // Return sensor ID and error on permanent failure
             }
+        });
+
+        // Process the stream concurrently
+        let mut results = fetches.buffer_unordered(CONCURRENT_FETCHES);
+
+        while let Some(result) = results.next().await {
+            match result {
+                Ok((sensor_id, db_measurements)) => {
+                    info!(
+                        "Successfully processed fetch task for sensor {}, got {} measurements.",
+                        sensor_id,
+                        db_measurements.len()
+                    );
+                    all_db_measurements.extend(db_measurements);
+                },
+                Err((sensor_id, e)) => {
+                    // Error already logged within the future, just note completion
+                    info!(
+                        "Fetch task for sensor {} completed with error: {}",
+                        sensor_id, e
+                    );
+                },
+            }
+            // Increment progress bar after each task completes (success or failure)
             pb_measurements.inc(1);
         }
-        pb_measurements.finish_with_message("Finished fetching measurements.");
+
+        pb_measurements.finish_with_message("Finished fetching all measurements.");
 
         // --- Step 4 (Continued): Insert Measurements into DB ---
         if all_db_measurements.is_empty() {

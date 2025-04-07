@@ -18,6 +18,7 @@ const BASE_URL: &str = "https://api.openaq.org/v3";
 /// An asynchronous client for fetching air quality data from the OpenAQ API v3.
 ///
 /// Holds a `reqwest::Client` instance for making HTTP requests and the API key.
+#[derive(Clone)] // Added Clone derive
 pub struct OpenAQClient {
     client: Client,
     api_key: String,
